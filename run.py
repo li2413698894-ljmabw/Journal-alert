@@ -396,7 +396,7 @@ def run(args: argparse.Namespace) -> int:
     log.info("keyword matched %d/%d items (min_score=%d)", len(matched), len(items), min_score)
 
     with Store(cfg["state_db"]) as store:
-               known = store.known_uids(
+        known = store.known_uids(
             [
                 entry["item"].uid
                 for entry in matched
