@@ -1,0 +1,39 @@
+name: journal-alert OA smoke
+
+# Manual, read-only verification of the optional Open Access integration.
+# This workflow never opens the state database, writes reports, pushes
+# notifications, or contacts Zotero.
+on:
+  workflow_dispatch:
+    inputs:
+      doi:
+        description: "用于验证的 DOI（默认是已知开放获取文章）"
+        required: false
+        default: "10.1371/journal.pone.0000308"
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    env:
+      JALERT_MAILTO: ${{ vars.JALERT_MAILTO }}
+      OA_TEST_DOI: ${{ inputs.doi }}
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Syntax and deterministic OA tests
+        run: |
+          python -m compileall -q run.py jalert tools/oa_smoke.py tests
+          python -m unittest discover -s tests -p "test_*.py" -v
+
+      - name: Live Unpaywall and report-rendering check
+        run: python tools/oa_smoke.py --doi "${OA_TEST_DOI}"
