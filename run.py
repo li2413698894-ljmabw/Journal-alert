@@ -29,7 +29,6 @@ from jalert.report import build_digest, build_markdown  # noqa: E402
 from jalert.score import Scorer, tier_of  # noqa: E402
 from jalert.state import Store, last_run_started  # noqa: E402
 from jalert.zotero_sync import sync_entries
-from jalert.open_access import annotate_entries
 
 TIER_RANK = {"must_read": 0, "worth_reading": 1, "other": 2}
 
@@ -397,7 +396,7 @@ def run(args: argparse.Namespace) -> int:
         matched.append({"item": item, "scored": scored})
     log.info("keyword matched %d/%d items (min_score=%d)", len(matched), len(items), min_score)
 
-       with Store(cfg["state_db"]) as store:
+    with Store(cfg["state_db"]) as store:
         known = store.known_uids(
             [
                 entry["item"].uid
@@ -411,26 +410,12 @@ def run(args: argparse.Namespace) -> int:
             if entry["item"].uid not in known
         ]
 
+        for entry in new_entries:
         for entry in matched:
             entry["scored"].tier = tier_of(
                 entry["scored"].score,
                 tiers,
             )
-
-        if not args.dry_run:
-
-            try:
-                annotate_entries(
-                    entries=matched,
-                    cfg=cfg,
-                    log=log,
-                )
-
-            except Exception as exc:
-                log.warning(
-                    "Open-access lookup failed: %s",
-                    str(exc)[:500],
-                )
 
         if not args.dry_run:
 
@@ -531,32 +516,6 @@ def run(args: argparse.Namespace) -> int:
             merged_records = [entry_to_dict(e) for e in new_entries]
         else:
             seen_uid = {r["item"]["uid"] for r in merged_records}
-            current_records = {
-                entry["item"].uid: entry_to_dict(entry)
-                for entry in matched
-            }
-
-            # 用本次最新抓取结果更新已有记录，
-            # 包括作者、摘要和 OA 全文信息。
-            for index, record in enumerate(
-                merged_records
-            ):
-
-                uid = record[
-                    "item"
-                ][
-                    "uid"
-                ]
-
-                if uid in current_records:
-
-                    merged_records[
-                        index
-                    ] = current_records[
-                        uid
-                    ]
-
-            for entry in new_entries:
             for entry in new_entries:
                 # ``entry["item"]`` is an Item object here, not the dict form kept
                 # in the snapshot - so read the attribute, not a key.
