@@ -25,6 +25,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from jalert import push as push_module  # noqa: E402
 from jalert.config import describe_secret_sources, load_config  # noqa: E402
 from jalert.fetch import collect_items, http_request  # noqa: E402
+from jalert.open_access import annotate_entries  # noqa: E402
 from jalert.report import build_digest, build_markdown  # noqa: E402
 from jalert.score import Scorer, tier_of  # noqa: E402
 from jalert.state import Store, last_run_started  # noqa: E402
@@ -410,12 +411,36 @@ def run(args: argparse.Namespace) -> int:
             if entry["item"].uid not in known
         ]
 
-        for entry in new_entries:
         for entry in matched:
             entry["scored"].tier = tier_of(
                 entry["scored"].score,
                 tiers,
             )
+
+        # Open-access enrichment is optional and must never prevent the
+        # report, push notification, state update, or Zotero sync from running.
+        # Limit lookups to genuinely new entries to avoid repeatedly querying
+        # Unpaywall for articles already recorded in the local ledger.
+        if not args.dry_run:
+            try:
+                oa_result = annotate_entries(
+                    entries=new_entries,
+                    cfg=cfg,
+                    log=log,
+                )
+                if oa_result.get("enabled"):
+                    log.info(
+                        "Open-access result: checked=%d oa=%d pdf=%d failed=%d",
+                        oa_result.get("checked", 0),
+                        oa_result.get("oa", 0),
+                        oa_result.get("pdf", 0),
+                        oa_result.get("failed", 0),
+                    )
+            except Exception as exc:
+                log.warning(
+                    "Open-access lookup failed; continuing without OA metadata: %s",
+                    str(exc)[:500],
+                )
 
         if not args.dry_run:
 
@@ -450,7 +475,7 @@ def run(args: argparse.Namespace) -> int:
             len(new_entries),
             len(matched) - len(new_entries),
         )
-                # ====================================================
+        # ====================================================
         # Zotero 自动同步
         # ====================================================
 
@@ -640,3 +665,4 @@ def main(argv: list[str] | None = None) -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+
