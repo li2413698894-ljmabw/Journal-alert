@@ -532,6 +532,32 @@ def run(args: argparse.Namespace) -> int:
             merged_records = [entry_to_dict(e) for e in new_entries]
         else:
             seen_uid = {r["item"]["uid"] for r in merged_records}
+            current_records = {
+                entry["item"].uid: entry_to_dict(entry)
+                for entry in matched
+            }
+
+            # 用本次最新抓取结果更新已有记录，
+            # 包括作者、摘要和 OA 全文信息。
+            for index, record in enumerate(
+                merged_records
+            ):
+
+                uid = record[
+                    "item"
+                ][
+                    "uid"
+                ]
+
+                if uid in current_records:
+
+                    merged_records[
+                        index
+                    ] = current_records[
+                        uid
+                    ]
+
+            for entry in new_entries:
             for entry in new_entries:
                 # ``entry["item"]`` is an Item object here, not the dict form kept
                 # in the snapshot - so read the attribute, not a key.
