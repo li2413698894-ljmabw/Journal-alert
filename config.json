@@ -390,6 +390,10 @@
       "enabled": true
     }
   ],
+  "open_access": {
+  "enabled": true,
+  "provider": "unpaywall"
+},
   "zotero": {
     "enabled": true,
     "sync_tiers": [
