@@ -39,6 +39,90 @@ def _doi_link(doi: str) -> str:
     return f"[{doi}](https://doi.org/{doi})"
 
 
+def _oa_markdown(
+    item,
+) -> str:
+
+    pdf_url = getattr(
+        item,
+        "oa_pdf_url",
+        "",
+    ) or ""
+
+    oa_url = getattr(
+        item,
+        "oa_url",
+        "",
+    ) or ""
+
+    checked = bool(
+        getattr(
+            item,
+            "oa_checked",
+            False,
+        )
+    )
+
+    version = getattr(
+        item,
+        "oa_version",
+        "",
+    ) or ""
+
+    host_type = getattr(
+        item,
+        "oa_host_type",
+        "",
+    ) or ""
+
+    if pdf_url:
+
+        suffix = []
+
+        if version:
+            suffix.append(
+                version
+            )
+
+        if host_type:
+            suffix.append(
+                host_type
+            )
+
+        extra = (
+            " ｜ "
+            + " / ".join(
+                suffix
+            )
+            if suffix
+            else ""
+        )
+
+        return (
+            "- **全文**："
+            f"✅ [免费 PDF]({pdf_url})"
+            f"{extra}"
+        )
+
+    if oa_url:
+
+        return (
+            "- **全文**："
+            f"🟢 [开放全文页面]({oa_url})"
+        )
+
+    if checked:
+
+        return (
+            "- **全文**："
+            "🔒 暂未发现合法开放全文"
+        )
+
+    return ""
+
+    return f"[{doi}](https://doi.org/{doi})"
+
+
 def _truncate(text: str, limit: int) -> str:
     text = (text or "").strip()
 
@@ -472,6 +556,14 @@ def build_markdown(
                 lines.append(
                     "- **方法识别**："
                     "标题和摘要中暂未识别到明确方法"
+                )
+                oa_line = _oa_markdown(
+                item
+            )
+
+            if oa_line:
+                lines.append(
+                    oa_line
                 )
 
             hits = "、".join(
