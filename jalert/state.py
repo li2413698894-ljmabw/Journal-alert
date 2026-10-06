@@ -2,15 +2,19 @@
 
 from __future__ import annotations
 
+import json
 import sqlite3
 from datetime import datetime
 from pathlib import Path
+
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS articles (
     uid           TEXT PRIMARY KEY,
     doi           TEXT,
     title         TEXT NOT NULL,
+    abstract      TEXT,
+    authors       TEXT,
     journal       TEXT,
     issn          TEXT,
     url           TEXT,
@@ -21,8 +25,12 @@ CREATE TABLE IF NOT EXISTS articles (
     keywords      TEXT,
     first_seen    TEXT
 );
-CREATE INDEX IF NOT EXISTS idx_articles_first_seen ON articles(first_seen);
-CREATE INDEX IF NOT EXISTS idx_articles_pub_date   ON articles(pub_date);
+
+CREATE INDEX IF NOT EXISTS idx_articles_first_seen
+ON articles(first_seen);
+
+CREATE INDEX IF NOT EXISTS idx_articles_pub_date
+ON articles(pub_date);
 
 CREATE TABLE IF NOT EXISTS runs (
     id            INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -41,10 +49,24 @@ CREATE TABLE IF NOT EXISTS runs (
 class Store:
     def __init__(self, path: str | Path):
         self.path = str(path)
-        Path(self.path).parent.mkdir(parents=True, exist_ok=True)
-        self.conn = sqlite3.connect(self.path)
+
+        Path(self.path).parent.mkdir(
+            parents=True,
+            exist_ok=True,
+        )
+
+        self.conn = sqlite3.connect(
+            self.path
+        )
+
         self.conn.row_factory = sqlite3.Row
-        self.conn.executescript(SCHEMA)
+
+        self.conn.executescript(
+            SCHEMA
+        )
+
+        self._migrate_articles_table()
+
         self.conn.commit()
 
     def __enter__(self) -> "Store":
@@ -56,49 +78,238 @@ class Store:
     def close(self) -> None:
         self.conn.close()
 
-    def known_uids(self, uids: list[str]) -> set[str]:
+    # ========================================================
+    # 数据库自动升级
+    # ========================================================
+
+    def _migrate_articles_table(self) -> None:
+        """Add new columns to older seen.sqlite files automatically."""
+
+        rows = self.conn.execute(
+            "PRAGMA table_info(articles)"
+        ).fetchall()
+
+        existing = {
+            row["name"]
+            for row in rows
+        }
+
+        required = {
+            "abstract": "TEXT",
+            "authors": "TEXT",
+        }
+
+        for column, sql_type in required.items():
+
+            if column not in existing:
+
+                self.conn.execute(
+                    f"ALTER TABLE articles "
+                    f"ADD COLUMN {column} {sql_type}"
+                )
+
+        self.conn.commit()
+
+    # ========================================================
+    # 去重
+    # ========================================================
+
+    def known_uids(
+        self,
+        uids: list[str],
+    ) -> set[str]:
+
         if not uids:
             return set()
+
         found: set[str] = set()
+
         chunk = 400
-        for start in range(0, len(uids), chunk):
-            batch = uids[start : start + chunk]
-            placeholders = ",".join("?" * len(batch))
+
+        for start in range(
+            0,
+            len(uids),
+            chunk,
+        ):
+
+            batch = uids[
+                start : start + chunk
+            ]
+
+            placeholders = ",".join(
+                "?"
+                * len(batch)
+            )
+
             rows = self.conn.execute(
-                f"SELECT uid FROM articles WHERE uid IN ({placeholders})", batch
+                (
+                    "SELECT uid "
+                    "FROM articles "
+                    f"WHERE uid IN ({placeholders})"
+                ),
+                batch,
             ).fetchall()
-            found.update(row["uid"] for row in rows)
+
+            found.update(
+                row["uid"]
+                for row in rows
+            )
+
         return found
 
-    def save(self, entries: list[tuple[object, object]]) -> int:
-        """Persist ``(item, scored)`` pairs; returns the number of newly inserted rows."""
-        now = datetime.now().isoformat(timespec="seconds")
+    # ========================================================
+    # 保存新文献
+    # ========================================================
+
+    def save(
+        self,
+        entries: list[
+            tuple[
+                object,
+                object,
+            ]
+        ],
+    ) -> int:
+
+        """Persist (item, scored) pairs."""
+
+        now = datetime.now().isoformat(
+            timespec="seconds"
+        )
+
         inserted = 0
+
         for item, scored in entries:
+
+            authors = getattr(
+                item,
+                "authors",
+                [],
+            ) or []
+
+            abstract = getattr(
+                item,
+                "abstract",
+                "",
+            ) or ""
+
             cursor = self.conn.execute(
                 """
                 INSERT OR IGNORE INTO articles
-                    (uid, doi, title, journal, issn, url, pub_date, score, tier, source, keywords, first_seen)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                (
+                    uid,
+                    doi,
+                    title,
+                    abstract,
+                    authors,
+                    journal,
+                    issn,
+                    url,
+                    pub_date,
+                    score,
+                    tier,
+                    source,
+                    keywords,
+                    first_seen
+                )
+                VALUES (
+                    ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+                )
                 """,
                 (
                     item.uid,
                     item.doi,
                     item.title,
+                    abstract,
+                    json.dumps(
+                        authors,
+                        ensure_ascii=False,
+                    ),
                     item.journal,
                     item.issn,
                     item.url,
                     item.date,
                     scored.score,
-                    getattr(scored, "tier", ""),
+                    getattr(
+                        scored,
+                        "tier",
+                        "",
+                    ),
                     item.source,
-                    " / ".join(scored.labels),
+                    " / ".join(
+                        scored.labels
+                    ),
                     now,
                 ),
             )
+
             inserted += cursor.rowcount
+
         self.conn.commit()
+
         return inserted
+
+    # ========================================================
+    # 每周汇总读取
+    # ========================================================
+
+    def recent_articles(
+        self,
+        days: int = 7,
+    ) -> list[dict]:
+
+        """Return articles first seen during the recent N days."""
+
+        rows = self.conn.execute(
+            """
+            SELECT *
+            FROM articles
+            WHERE first_seen >= datetime(
+                'now',
+                ?
+            )
+            ORDER BY
+                score DESC,
+                first_seen DESC
+            """,
+            (
+                f"-{int(days)} days",
+            ),
+        ).fetchall()
+
+        return [
+            dict(row)
+            for row in rows
+        ]
+
+    # ========================================================
+    # Zotero 累积文献库读取
+    # ========================================================
+
+    def all_articles(
+        self,
+    ) -> list[dict]:
+
+        """Return all articles in the cumulative literature library."""
+
+        rows = self.conn.execute(
+            """
+            SELECT *
+            FROM articles
+            ORDER BY
+                first_seen DESC,
+                score DESC
+            """
+        ).fetchall()
+
+        return [
+            dict(row)
+            for row in rows
+        ]
+
+    # ========================================================
+    # 运行记录
+    # ========================================================
 
     def record_run(
         self,
@@ -111,14 +322,27 @@ class Store:
         report_path: str,
         note: str = "",
     ) -> None:
+
         self.conn.execute(
             """
-            INSERT INTO runs (started, finished, fetched, matched, new_items, pushed, report_path, note)
+            INSERT INTO runs
+            (
+                started,
+                finished,
+                fetched,
+                matched,
+                new_items,
+                pushed,
+                report_path,
+                note
+            )
             VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 started,
-                datetime.now().isoformat(timespec="seconds"),
+                datetime.now().isoformat(
+                    timespec="seconds"
+                ),
                 fetched,
                 matched,
                 new_items,
@@ -127,29 +351,76 @@ class Store:
                 note[:500],
             ),
         )
+
         self.conn.commit()
 
-    def recent_counts(self, days: int = 30) -> dict:
+    def recent_counts(
+        self,
+        days: int = 30,
+    ) -> dict:
+
         row = self.conn.execute(
-            "SELECT COUNT(*) AS total FROM articles WHERE first_seen >= datetime('now', ?)",
-            (f"-{int(days)} days",),
+            """
+            SELECT COUNT(*) AS total
+            FROM articles
+            WHERE first_seen >= datetime(
+                'now',
+                ?
+            )
+            """,
+            (
+                f"-{int(days)} days",
+            ),
         ).fetchone()
-        return {"articles_total": self.conn.execute("SELECT COUNT(*) c FROM articles").fetchone()["c"],
-                "articles_last_%dd" % days: row["total"]}
+
+        total = self.conn.execute(
+            """
+            SELECT COUNT(*) AS c
+            FROM articles
+            """
+        ).fetchone()["c"]
+
+        return {
+            "articles_total": total,
+            f"articles_last_{days}d": row["total"],
+        }
 
 
-def last_run_started(db_path: str | Path) -> str | None:
-    """Timestamp of the most recent run, or ``None`` if there is no history yet.
+def last_run_started(
+    db_path: str | Path,
+) -> str | None:
 
-    Used to widen the lookback window after the machine has been switched off
-    for a while, so papers published during the gap are not missed forever.
-    """
-    path = Path(db_path)
+    """Return timestamp of most recent run."""
+
+    path = Path(
+        db_path
+    )
+
     if not path.is_file():
         return None
-    conn = sqlite3.connect(str(path))
+
+    conn = sqlite3.connect(
+        str(path)
+    )
+
     try:
-        row = conn.execute("SELECT started FROM runs ORDER BY id DESC LIMIT 1").fetchone()
-        return row[0] if row and row[0] else None
+
+        row = conn.execute(
+            """
+            SELECT started
+            FROM runs
+            ORDER BY id DESC
+            LIMIT 1
+            """
+        ).fetchone()
+
+        return (
+            row[0]
+            if row
+            and row[0]
+            else None
+        )
+
     finally:
+
         conn.close()
