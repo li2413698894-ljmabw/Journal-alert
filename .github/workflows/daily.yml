@@ -40,6 +40,9 @@ jobs:
       JALERT_SERVERCHAN_SENDKEY: ${{ secrets.SERVERCHAN_SENDKEY }}
       JALERT_PUSHPLUS_TOKEN: ${{ secrets.PUSHPLUS_TOKEN }}
       JALERT_BARK_KEY: ${{ secrets.BARK_KEY }}
+       # Zotero Web API
+      ZOTERO_USER_ID: ${{ secrets.ZOTERO_USER_ID }}
+      ZOTERO_API_KEY: ${{ secrets.ZOTERO_API_KEY }}
       # Optional: a real contact address gets OpenAlex/Crossref "polite pool" priority.
       JALERT_MAILTO: ${{ vars.JALERT_MAILTO }}
 
