@@ -1,11 +1,11 @@
 """Weekly research digest and Zotero BibTeX exporter.
 
-V3 features:
-1. Read the literature accumulated in state/seen.sqlite during the last N days.
-2. Build a weekly Markdown research digest.
-3. Export a weekly BibTeX file.
-4. Export a cumulative Zotero-compatible library.bib.
-5. Push a compact weekly summary through the existing push channels.
+V3.1:
+1. Read recent literature from state/seen.sqlite.
+2. Re-score every article with the CURRENT config.json + score.py.
+3. Build weekly Markdown research digest.
+4. Export weekly and cumulative Zotero BibTeX.
+5. Push weekly summary through existing push channels.
 
 Standard-library only.
 """
@@ -21,15 +21,12 @@ from datetime import date, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
 
+from . import push as push_module
 from .config import load_config
 from .enrich import enrich
-from . import push as push_module
+from .score import Scorer, tier_of
 from .state import Store
 
-
-# ============================================================
-# Logging
-# ============================================================
 
 def setup_logging(cfg: dict) -> logging.Logger:
     logger = logging.getLogger("jalert.weekly")
@@ -58,10 +55,6 @@ def setup_logging(cfg: dict) -> logging.Logger:
     return logger
 
 
-# ============================================================
-# Helpers
-# ============================================================
-
 def _parse_authors(raw: str | None) -> list[str]:
     if not raw:
         return []
@@ -86,22 +79,9 @@ def _parse_authors(raw: str | None) -> list[str]:
     ]
 
 
-def _parse_labels(raw: str | None) -> list[str]:
-    if not raw:
-        return []
-
-    return [
-        part.strip()
-        for part in str(raw).split("/")
-        if part.strip()
-    ]
-
-
-def _article_objects(row: dict):
-    """Convert one SQLite row into Item-like and Scored-like objects."""
-
-    item = SimpleNamespace(
-        uid=row.get("uid", ""),
+def _article_from_row(row: dict):
+    return SimpleNamespace(
+        uid=row.get("uid", "") or "",
         doi=row.get("doi", "") or "",
         title=row.get("title", "") or "",
         abstract=row.get("abstract", "") or "",
@@ -115,32 +95,21 @@ def _article_objects(row: dict):
         source=row.get("source", "") or "",
     )
 
-    scored = SimpleNamespace(
-        score=int(
-            row.get("score", 0) or 0
-        ),
-        labels=_parse_labels(
-            row.get("keywords")
-        ),
-    )
-
-    return item, scored
-
 
 def _article_url(item) -> str:
     if getattr(item, "url", ""):
         return item.url
 
     if getattr(item, "doi", ""):
-        return (
-            "https://doi.org/"
-            + item.doi
-        )
+        return f"https://doi.org/{item.doi}"
 
     return ""
 
 
-def _week_info(today: date) -> tuple[str, date, date]:
+def _week_info(
+    today: date,
+) -> tuple[str, date, date]:
+
     iso = today.isocalendar()
 
     week_id = (
@@ -155,274 +124,78 @@ def _week_info(today: date) -> tuple[str, date, date]:
         days=6
     )
 
-    return (
-        week_id,
-        monday,
-        sunday,
-    )
+    return week_id, monday, sunday
 
 
-def _tier_name(score: int, cfg: dict) -> str:
-    tiers = cfg.get("tiers", {})
-
-    must = int(
-        tiers.get("must_read", 15)
-    )
-
-    worth = int(
-        tiers.get("worth_reading", 8)
-    )
-
-    if score >= must:
-        return "必读"
-
-    if score >= worth:
-        return "值得一读"
-
-    return "其他相关"
-
-
-# ============================================================
-# BibTeX
-# ============================================================
-
-def _bib_escape(value: str) -> str:
-    """Escape a conservative subset of BibTeX-sensitive characters."""
-
-    value = str(value or "")
-
-    value = value.replace(
-        "\\",
-        r"\\",
-    )
-
-    value = value.replace(
-        "{",
-        r"\{",
-    )
-
-    value = value.replace(
-        "}",
-        r"\}",
-    )
-
-    value = value.replace(
-        "&",
-        r"\&",
-    )
-
-    value = value.replace(
-        "%",
-        r"\%",
-    )
-
-    value = value.replace(
-        "#",
-        r"\#",
-    )
-
-    value = value.replace(
-        "_",
-        r"\_",
-    )
-
-    return value.strip()
-
-
-def _citation_key(
-    row: dict,
-    used: set[str],
+def _tier_name(
+    score: int,
+    cfg: dict,
 ) -> str:
 
-    authors = _parse_authors(
-        row.get("authors")
+    tier = tier_of(
+        score,
+        cfg.get("tiers", {}),
     )
 
-    surname = "Article"
-
-    if authors:
-
-        parts = re.findall(
-            r"[A-Za-z0-9]+",
-            authors[0],
-        )
-
-        if parts:
-            surname = parts[-1]
-
-    year = (
-        str(row.get("pub_date") or "")[:4]
-        or "ND"
-    )
-
-    title = str(
-        row.get("title") or ""
-    )
-
-    words = re.findall(
-        r"[A-Za-z0-9]+",
-        title,
-    )
-
-    keyword = (
-        words[0]
-        if words
-        else "Paper"
-    )
-
-    base = (
-        f"{surname}{year}{keyword}"
-    )
-
-    base = re.sub(
-        r"[^A-Za-z0-9]+",
-        "",
-        base,
-    )
-
-    if not base:
-        base = "Article"
-
-    key = base
-    counter = 2
-
-    while key in used:
-        key = f"{base}{counter}"
-        counter += 1
-
-    used.add(key)
-
-    return key
-
-
-def build_bibtex(
-    rows: list[dict],
-) -> str:
-
-    used: set[str] = set()
-
-    blocks: list[str] = []
-
-    seen_identity: set[str] = set()
-
-    for row in rows:
-
-        doi = (
-            row.get("doi") or ""
-        ).strip().lower()
-
-        uid = (
-            row.get("uid") or ""
-        ).strip()
-
-        identity = (
-            f"doi:{doi}"
-            if doi
-            else uid
-        )
-
-        if identity in seen_identity:
-            continue
-
-        seen_identity.add(identity)
-
-        key = _citation_key(
-            row,
-            used,
-        )
-
-        title = _bib_escape(
-            row.get("title", "")
-        )
-
-        journal = _bib_escape(
-            row.get("journal", "")
-        )
-
-        url = _bib_escape(
-            row.get("url", "")
-        )
-
-        pub_date = str(
-            row.get("pub_date") or ""
-        )
-
-        year = (
-            pub_date[:4]
-            if len(pub_date) >= 4
-            else ""
-        )
-
-        authors = _parse_authors(
-            row.get("authors")
-        )
-
-        author_text = " and ".join(
-            _bib_escape(author)
-            for author in authors
-        )
-
-        fields = [
-            f"  title = {{{title}}}",
-        ]
-
-        if author_text:
-            fields.append(
-                f"  author = {{{author_text}}}"
-            )
-
-        if journal:
-            fields.append(
-                f"  journal = {{{journal}}}"
-            )
-
-        if year:
-            fields.append(
-                f"  year = {{{year}}}"
-            )
-
-        if doi:
-            fields.append(
-                f"  doi = {{{_bib_escape(doi)}}}"
-            )
-
-        if url:
-            fields.append(
-                f"  url = {{{url}}}"
-            )
-
-        block = (
-            f"@article{{{key},\n"
-            + ",\n".join(fields)
-            + "\n}"
-        )
-
-        blocks.append(block)
-
-    if not blocks:
-        return ""
-
-    return (
-        "\n\n".join(blocks)
-        + "\n"
+    return {
+        "must_read": "必读",
+        "worth_reading": "值得一读",
+        "other": "其他相关",
+    }.get(
+        tier,
+        "其他相关",
     )
 
 
 # ============================================================
-# Weekly enrichment
+# 当前规则重新评分
 # ============================================================
 
-def enrich_rows(
+def rescore_rows(
     rows: list[dict],
+    cfg: dict,
 ) -> list[dict]:
 
-    result = []
+    """Re-score historical articles using CURRENT scoring rules."""
+
+    scorer = Scorer(
+        cfg.get("keywords", []),
+        cfg.get("exclude_terms", []),
+        cfg.get(
+            "exclude_doi_prefixes",
+            [],
+        ),
+    )
+
+    min_score = int(
+        cfg.get(
+            "tiers",
+            {},
+        ).get(
+            "min_score",
+            5,
+        )
+    )
+
+    result: list[dict] = []
 
     for row in rows:
 
-        item, scored = (
-            _article_objects(row)
+        item = _article_from_row(
+            row
         )
+
+        scored = scorer.score(
+            item
+        )
+
+        # 如果按照当前规则已不再达到最低收录标准，
+        # 就不进入当前周报推荐。
+        if (
+            scored.excluded
+            or scored.score < min_score
+        ):
+            continue
 
         info = enrich(
             item,
@@ -455,20 +228,266 @@ def enrich_rows(
                     )
                     or []
                 ),
+                "old_score": int(
+                    row.get("score", 0)
+                    or 0
+                ),
             }
         )
 
     result.sort(
         key=lambda x: (
-            -int(
-                x["scored"].score
+            {
+                "must_read": 0,
+                "worth_reading": 1,
+                "other": 2,
+            }.get(
+                tier_of(
+                    x["scored"].score,
+                    cfg.get(
+                        "tiers",
+                        {},
+                    ),
+                ),
+                3,
             ),
+            -x["scored"].score,
             x["item"].journal,
             x["item"].title,
         )
     )
 
     return result
+
+
+# ============================================================
+# BibTeX
+# ============================================================
+
+def _bib_escape(
+    value: str,
+) -> str:
+
+    value = str(
+        value or ""
+    )
+
+    replacements = (
+        ("\\", r"\\"),
+        ("{", r"\{"),
+        ("}", r"\}"),
+        ("&", r"\&"),
+        ("%", r"\%"),
+        ("#", r"\#"),
+        ("_", r"\_"),
+    )
+
+    for old, new in replacements:
+        value = value.replace(
+            old,
+            new,
+        )
+
+    return value.strip()
+
+
+def _citation_key(
+    row: dict,
+    used: set[str],
+) -> str:
+
+    authors = _parse_authors(
+        row.get("authors")
+    )
+
+    surname = "Article"
+
+    if authors:
+
+        parts = re.findall(
+            r"[A-Za-z0-9]+",
+            authors[0],
+        )
+
+        if parts:
+            surname = parts[-1]
+
+    year = (
+        str(
+            row.get("pub_date")
+            or ""
+        )[:4]
+        or "ND"
+    )
+
+    title = str(
+        row.get("title")
+        or ""
+    )
+
+    words = re.findall(
+        r"[A-Za-z0-9]+",
+        title,
+    )
+
+    keyword = (
+        words[0]
+        if words
+        else "Paper"
+    )
+
+    base = re.sub(
+        r"[^A-Za-z0-9]+",
+        "",
+        f"{surname}{year}{keyword}",
+    )
+
+    if not base:
+        base = "Article"
+
+    key = base
+    counter = 2
+
+    while key in used:
+        key = (
+            f"{base}{counter}"
+        )
+        counter += 1
+
+    used.add(key)
+
+    return key
+
+
+def build_bibtex(
+    rows: list[dict],
+) -> str:
+
+    used: set[str] = set()
+    seen_identity: set[str] = set()
+    blocks: list[str] = []
+
+    for row in rows:
+
+        doi = (
+            row.get("doi")
+            or ""
+        ).strip().lower()
+
+        uid = (
+            row.get("uid")
+            or ""
+        ).strip()
+
+        identity = (
+            f"doi:{doi}"
+            if doi
+            else uid
+        )
+
+        if identity in seen_identity:
+            continue
+
+        seen_identity.add(
+            identity
+        )
+
+        key = _citation_key(
+            row,
+            used,
+        )
+
+        title = _bib_escape(
+            row.get(
+                "title",
+                "",
+            )
+        )
+
+        journal = _bib_escape(
+            row.get(
+                "journal",
+                "",
+            )
+        )
+
+        url = _bib_escape(
+            row.get(
+                "url",
+                "",
+            )
+        )
+
+        pub_date = str(
+            row.get(
+                "pub_date",
+                "",
+            )
+            or ""
+        )
+
+        year = (
+            pub_date[:4]
+            if len(pub_date) >= 4
+            else ""
+        )
+
+        authors = _parse_authors(
+            row.get("authors")
+        )
+
+        author_text = " and ".join(
+            _bib_escape(author)
+            for author in authors
+        )
+
+        fields = [
+            f"  title = {{{title}}}",
+        ]
+
+        if author_text:
+            fields.append(
+                f"  author = "
+                f"{{{author_text}}}"
+            )
+
+        if journal:
+            fields.append(
+                f"  journal = "
+                f"{{{journal}}}"
+            )
+
+        if year:
+            fields.append(
+                f"  year = "
+                f"{{{year}}}"
+            )
+
+        if doi:
+            fields.append(
+                f"  doi = "
+                f"{{{_bib_escape(doi)}}}"
+            )
+
+        if url:
+            fields.append(
+                f"  url = "
+                f"{{{url}}}"
+            )
+
+        blocks.append(
+            f"@article{{{key},\n"
+            + ",\n".join(fields)
+            + "\n}"
+        )
+
+    if not blocks:
+        return ""
+
+    return (
+        "\n\n".join(blocks)
+        + "\n"
+    )
 
 
 # ============================================================
@@ -482,6 +501,7 @@ def build_weekly_markdown(
     end_date: date,
     cfg: dict,
     entries: list[dict],
+    raw_count: int,
     generated_at: str,
 ) -> str:
 
@@ -493,25 +513,25 @@ def build_weekly_markdown(
         "文献雷达",
     )
 
-    must_threshold = int(
-        cfg.get(
-            "tiers",
-            {},
-        ).get(
-            "must_read",
-            15,
-        )
-    )
+    counts = {
+        "must_read": 0,
+        "worth_reading": 0,
+        "other": 0,
+    }
 
-    must_count = sum(
-        1
-        for entry in entries
-        if entry["scored"].score
-        >= must_threshold
-    )
+    for entry in entries:
+
+        tier = tier_of(
+            entry["scored"].score,
+            cfg.get(
+                "tiers",
+                {},
+            ),
+        )
+
+        counts[tier] += 1
 
     tag_counter = Counter()
-
     method_counter = Counter()
 
     for entry in entries:
@@ -534,34 +554,40 @@ def build_weekly_markdown(
         f"start: {start_date.isoformat()}",
         f"end: {end_date.isoformat()}",
         f"generated: {generated_at}",
+        f"historical_articles: {raw_count}",
         f"articles: {len(entries)}",
-        f"must_read: {must_count}",
+        f"must_read: {counts['must_read']}",
+        f"worth_reading: {counts['worth_reading']}",
+        f"other: {counts['other']}",
+        "rescored: true",
         "tags: [journal-alert, weekly-review]",
         "---",
         "",
         f"# {project} · {week_id} 周报",
         "",
         (
-            f"> 周期：**{start_date.isoformat()} — "
+            f"> 周期：**"
+            f"{start_date.isoformat()} — "
             f"{end_date.isoformat()}**"
         ),
         (
-            f"> 本周累计收录 **{len(entries)}** 篇 ｜ "
-            f"必读 **{must_count}** 篇"
+            f"> 历史库近 7 天共 **{raw_count}** 篇 ｜ "
+            f"按当前规则重新筛选后 **{len(entries)}** 篇"
+        ),
+        (
+            f"> 必读 **{counts['must_read']}** ｜ "
+            f"值得一读 **{counts['worth_reading']}** ｜ "
+            f"其他相关 **{counts['other']}**"
+        ),
+        (
+            "> 注：周报使用当前 "
+            "`config.json + score.py` "
+            "重新评分，不沿用历史数据库旧分数。"
         ),
         "",
+        "## 本周重点推荐",
+        "",
     ]
-
-    # --------------------------------------------------------
-    # 本周重点推荐
-    # --------------------------------------------------------
-
-    lines.extend(
-        [
-            "## 本周重点推荐",
-            "",
-        ]
-    )
 
     top_entries = entries[:10]
 
@@ -569,7 +595,7 @@ def build_weekly_markdown(
 
         lines.extend(
             [
-                "本周暂无新收录文献。",
+                "本周按当前规则暂无推荐文献。",
                 "",
             ]
         )
@@ -584,6 +610,10 @@ def build_weekly_markdown(
             "scored"
         ].score
 
+        old_score = entry[
+            "old_score"
+        ]
+
         url = _article_url(
             item
         )
@@ -595,11 +625,15 @@ def build_weekly_markdown(
         )
 
         tags = " / ".join(
-            entry["research_tags"][:3]
+            entry[
+                "research_tags"
+            ][:3]
         )
 
         methods = " / ".join(
-            entry["methods"][:5]
+            entry[
+                "methods"
+            ][:5]
         )
 
         lines.append(
@@ -611,37 +645,48 @@ def build_weekly_markdown(
         lines.append(
             f"- **期刊**：{item.journal} ｜ "
             f"**日期**：{item.date or '未知'} ｜ "
-            f"**得分**：{score} ｜ "
-            f"**等级**：{_tier_name(score, cfg)}"
+            f"**当前得分**：{score} ｜ "
+            f"**等级**："
+            f"{_tier_name(score, cfg)}"
         )
 
-        if tags:
+        if old_score != score:
+
             lines.append(
-                f"- **研究用途**：{tags}"
+                f"- **历史得分**：{old_score} → "
+                f"**当前规则得分**：{score}"
+            )
+
+        if tags:
+
+            lines.append(
+                f"- **研究用途**："
+                f"{tags}"
             )
 
         if entry["reason"]:
+
             lines.append(
                 f"- **相关原因**："
                 f"{entry['reason']}"
             )
 
         if methods:
+
             lines.append(
-                f"- **方法识别**：{methods}"
+                f"- **方法识别**："
+                f"{methods}"
             )
 
         if item.doi:
+
             lines.append(
-                f"- **DOI**："
-                f"https://doi.org/{item.doi}"
+                "- **DOI**："
+                f"https://doi.org/"
+                f"{item.doi}"
             )
 
         lines.append("")
-
-    # --------------------------------------------------------
-    # 按研究用途分类
-    # --------------------------------------------------------
 
     lines.extend(
         [
@@ -652,14 +697,17 @@ def build_weekly_markdown(
         ]
     )
 
-    grouped: dict[str, list[dict]] = (
-        defaultdict(list)
-    )
+    grouped: dict[
+        str,
+        list[dict],
+    ] = defaultdict(list)
 
     for entry in entries:
 
         primary_tag = (
-            entry["research_tags"][0]
+            entry[
+                "research_tags"
+            ][0]
             if entry[
                 "research_tags"
             ]
@@ -683,7 +731,9 @@ def build_weekly_markdown(
 
     for tag in group_order:
 
-        bucket = grouped[tag]
+        bucket = grouped[
+            tag
+        ]
 
         lines.append(
             f"### {tag}（{len(bucket)}）"
@@ -693,7 +743,9 @@ def build_weekly_markdown(
 
         for entry in bucket[:10]:
 
-            item = entry["item"]
+            item = entry[
+                "item"
+            ]
 
             url = _article_url(
                 item
@@ -706,8 +758,8 @@ def build_weekly_markdown(
             )
 
             lines.append(
-                f"- {title} "
-                f"— {item.journal} "
+                f"- {title} — "
+                f"{item.journal} "
                 f"（{entry['scored'].score} 分）"
             )
 
@@ -719,10 +771,6 @@ def build_weekly_markdown(
             )
 
         lines.append("")
-
-    # --------------------------------------------------------
-    # 方法趋势
-    # --------------------------------------------------------
 
     lines.extend(
         [
@@ -750,17 +798,12 @@ def build_weekly_markdown(
 
         lines.append(
             "本周文献标题和摘要中"
-            "未识别到明确的方法学关键词。"
+            "暂未识别到明确的方法学关键词。"
         )
-
-    lines.append("")
-
-    # --------------------------------------------------------
-    # 研究方向统计
-    # --------------------------------------------------------
 
     lines.extend(
         [
+            "",
             "---",
             "",
             "## 研究方向统计",
@@ -768,13 +811,21 @@ def build_weekly_markdown(
         ]
     )
 
-    for tag, count in (
-        tag_counter.most_common()
-    ):
+    if tag_counter:
+
+        for tag, count in (
+            tag_counter.most_common()
+        ):
+
+            lines.append(
+                f"- **{tag}**："
+                f"{count} 篇"
+            )
+
+    else:
 
         lines.append(
-            f"- **{tag}**："
-            f"{count} 篇"
+            "暂无研究用途统计。"
         )
 
     lines.extend(
@@ -784,7 +835,8 @@ def build_weekly_markdown(
             "",
             (
                 "*由 journal-alert 自动生成 · "
-                f"{generated_at}*"
+                f"{generated_at} · "
+                "周报采用当前评分规则重新计算*"
             ),
             "",
         ]
@@ -794,7 +846,7 @@ def build_weekly_markdown(
 
 
 # ============================================================
-# Weekly Push
+# Weekly push
 # ============================================================
 
 def build_weekly_push(
@@ -802,6 +854,7 @@ def build_weekly_push(
     week_id: str,
     cfg: dict,
     entries: list[dict],
+    raw_count: int,
 ) -> tuple[str, str]:
 
     project = cfg.get(
@@ -812,35 +865,32 @@ def build_weekly_push(
         "文献雷达",
     )
 
-    must_threshold = int(
-        cfg.get(
-            "tiers",
-            {},
-        ).get(
-            "must_read",
-            15,
-        )
-    )
-
     must_count = sum(
         1
         for entry in entries
-        if entry[
-            "scored"
-        ].score
-        >= must_threshold
+        if tier_of(
+            entry[
+                "scored"
+            ].score,
+            cfg.get(
+                "tiers",
+                {},
+            ),
+        )
+        == "must_read"
     )
 
     title = (
         f"{project} {week_id}："
-        f"本周 {len(entries)} 篇，"
+        f"精选 {len(entries)} 篇，"
         f"必读 {must_count} 篇"
     )
 
     lines = [
         (
-            f"本周收录 **{len(entries)}** 篇，"
-            f"其中必读 **{must_count}** 篇。"
+            f"历史库近 7 天 **{raw_count}** 篇，"
+            f"按当前规则重新筛选后 "
+            f"**{len(entries)}** 篇。"
         ),
         "",
         "**优先阅读：**",
@@ -852,7 +902,9 @@ def build_weekly_push(
         1,
     ):
 
-        item = entry["item"]
+        item = entry[
+            "item"
+        ]
 
         url = _article_url(
             item
@@ -860,37 +912,40 @@ def build_weekly_push(
 
         if url:
 
-            head = (
+            lines.append(
                 f"{index}. "
                 f"[{item.title}]({url})"
             )
 
         else:
 
-            head = (
+            lines.append(
                 f"{index}. "
                 f"{item.title}"
             )
 
-        lines.append(head)
-
-        if entry[
+        tags = entry[
             "research_tags"
-        ]:
+        ]
+
+        if tags:
 
             lines.append(
                 "　用途："
                 + " / ".join(
-                    entry[
-                        "research_tags"
-                    ][:2]
+                    tags[:2]
                 )
             )
+
+        lines.append(
+            "　当前得分："
+            f"{entry['scored'].score}"
+        )
 
         lines.append("")
 
     lines.append(
-        "完整分类、方法趋势和 Zotero "
+        "完整周报、方法趋势和 Zotero "
         "文献库见仓库 weekly/ 与 zotero/。"
     )
 
@@ -955,23 +1010,28 @@ def run(
         cfg["state_db"]
     ) as store:
 
-        recent = store.recent_articles(
-            days=days
+        recent_rows = (
+            store.recent_articles(
+                days=days
+            )
         )
 
-        all_rows = store.all_articles()
+        all_rows = (
+            store.all_articles()
+        )
 
-    entries = enrich_rows(
-        recent
+    # 关键变化：
+    # 周报使用当前规则重新评分。
+    entries = rescore_rows(
+        recent_rows,
+        cfg,
     )
 
-    generated_at = datetime.now().strftime(
-        "%Y-%m-%d %H:%M"
+    generated_at = (
+        datetime.now().strftime(
+            "%Y-%m-%d %H:%M"
+        )
     )
-
-    # --------------------------------------------------------
-    # Markdown 周报
-    # --------------------------------------------------------
 
     markdown = build_weekly_markdown(
         week_id=week_id,
@@ -979,6 +1039,9 @@ def run(
         end_date=week_end,
         cfg=cfg,
         entries=entries,
+        raw_count=len(
+            recent_rows
+        ),
         generated_at=generated_at,
     )
 
@@ -998,12 +1061,10 @@ def run(
         weekly_path,
     )
 
-    # --------------------------------------------------------
-    # 本周 Zotero BibTeX
-    # --------------------------------------------------------
-
+    # Zotero 本周库仍保留历史库中本周全部文献，
+    # 不因后续评分规则改变而删除引用。
     weekly_bib = build_bibtex(
-        recent
+        recent_rows
     )
 
     weekly_bib_path = (
@@ -1021,10 +1082,6 @@ def run(
         "weekly BibTeX written: %s",
         weekly_bib_path,
     )
-
-    # --------------------------------------------------------
-    # 累积 Zotero 文献库
-    # --------------------------------------------------------
 
     library_bib = build_bibtex(
         all_rows
@@ -1046,10 +1103,6 @@ def run(
         library_path,
     )
 
-    # --------------------------------------------------------
-    # 微信周报推送
-    # --------------------------------------------------------
-
     if (
         not no_push
         and cfg.get(
@@ -1065,6 +1118,9 @@ def run(
             week_id=week_id,
             cfg=cfg,
             entries=entries,
+            raw_count=len(
+                recent_rows
+            ),
         )
 
         results = push_module.dispatch(
@@ -1083,8 +1139,14 @@ def run(
         )
 
     log.info(
-        "weekly complete: %d recent / %d cumulative articles",
-        len(recent),
+        (
+            "weekly complete: "
+            "%d historical / "
+            "%d selected / "
+            "%d cumulative"
+        ),
+        len(recent_rows),
+        len(entries),
         len(all_rows),
     )
 
