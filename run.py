@@ -405,13 +405,13 @@ def run(args: argparse.Namespace) -> int:
             ]
         )
 
-        new_entries = [
+               new_entries = [
             entry
             for entry in matched
             if entry["item"].uid not in known
         ]
 
-                for entry in matched:
+        for entry in matched:
             entry["scored"].tier = tier_of(
                 entry["scored"].score,
                 tiers,
@@ -420,7 +420,6 @@ def run(args: argparse.Namespace) -> int:
         if not args.dry_run:
 
             try:
-
                 annotate_entries(
                     entries=matched,
                     cfg=cfg,
@@ -428,7 +427,6 @@ def run(args: argparse.Namespace) -> int:
                 )
 
             except Exception as exc:
-
                 log.warning(
                     "Open-access lookup failed: %s",
                     str(exc)[:500],
