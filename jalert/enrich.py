@@ -200,7 +200,6 @@ METHOD_PATTERNS: tuple[tuple[str, tuple[str, ...]], ...] = (
         (
             r"\bstructural equation model(?:ing|ling)?\b",
             r"\bstructural equation modelling\b",
-            r"\bsem\b",
         ),
     ),
 
