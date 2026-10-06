@@ -1061,10 +1061,20 @@ def run(
         weekly_path,
     )
 
-    # Zotero 本周库仍保留历史库中本周全部文献，
-    # 不因后续评分规则改变而删除引用。
+        # --------------------------------------------------------
+    # Zotero 本周精准导出
+    # --------------------------------------------------------
+    # entries 已经是按照“当前 config.json + score.py”
+    # 重新评分并筛选后的本周文献。
+    # 因此只导出当前仍然相关的文献。
+
+    weekly_selected_rows = [
+        entry["row"]
+        for entry in entries
+    ]
+
     weekly_bib = build_bibtex(
-        recent_rows
+        weekly_selected_rows
     )
 
     weekly_bib_path = (
@@ -1079,12 +1089,29 @@ def run(
     )
 
     log.info(
-        "weekly BibTeX written: %s",
+        "weekly BibTeX written: %s (%d selected articles)",
         weekly_bib_path,
+        len(weekly_selected_rows),
     )
 
+    # --------------------------------------------------------
+    # Zotero 累积文献库精准导出
+    # --------------------------------------------------------
+    # seen.sqlite 保留全部历史记录，
+    # 但 library.bib 只输出按“当前规则”仍然相关的文献。
+
+    library_entries = rescore_rows(
+        all_rows,
+        cfg,
+    )
+
+    library_selected_rows = [
+        entry["row"]
+        for entry in library_entries
+    ]
+
     library_bib = build_bibtex(
-        all_rows
+        library_selected_rows
     )
 
     library_path = (
@@ -1099,8 +1126,10 @@ def run(
     )
 
     log.info(
-        "cumulative BibTeX written: %s",
+        "cumulative BibTeX written: %s (%d selected / %d historical)",
         library_path,
+        len(library_selected_rows),
+        len(all_rows),
     )
 
     if (
@@ -1138,15 +1167,17 @@ def run(
             ),
         )
 
-    log.info(
+        log.info(
         (
             "weekly complete: "
-            "%d historical / "
-            "%d selected / "
-            "%d cumulative"
+            "%d weekly historical / "
+            "%d weekly selected / "
+            "%d library selected / "
+            "%d library historical"
         ),
         len(recent_rows),
         len(entries),
+        len(library_selected_rows),
         len(all_rows),
     )
 
