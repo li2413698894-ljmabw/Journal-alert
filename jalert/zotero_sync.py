@@ -1,21 +1,28 @@
 """Automatic Zotero Web API synchronization for journal-alert.
 
+V4.1.1
+
 Features
 --------
 1. Sync selected papers directly to the user's Zotero library.
-2. Avoid duplicate imports by DOI or title.
-3. Create one top-level Zotero Collection named YYYY-MM-DD.
-4. Put newly imported papers into that day's Collection.
-5. Add journal-alert research tags and relevance information.
-6. Use only Python standard library.
+2. Load the Zotero library once and deduplicate locally.
+3. Deduplicate by DOI first, title second.
+4. Create one Zotero Collection named YYYY-MM-DD.
+5. Batch-create items instead of one request per paper.
+6. Respect Zotero Retry-After / Backoff headers.
+7. Retry 429 / 409 / 5xx failures safely.
+8. Add journal-alert research tags and relevance information.
+9. Use only the Python standard library.
 """
 
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
 import secrets
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -26,10 +33,16 @@ from .enrich import enrich
 ZOTERO_API_BASE = "https://api.zotero.org"
 API_VERSION = "3"
 
-SYNC_TIERS_DEFAULT = {
-    "must_read",
-    "worth_reading",
-}
+# Zotero 官方最多允许一次创建 50 个对象。
+# 这里保守地使用 25，降低请求体大小和限流风险。
+BATCH_SIZE = 25
+
+# 单次请求失败后的最大重试次数
+MAX_RETRIES = 6
+
+# 没有 Retry-After 时，指数退避最长等待时间
+MAX_BACKOFF_SECONDS = 60
+
 
 TIER_CN = {
     "must_read": "必读",
@@ -38,12 +51,15 @@ TIER_CN = {
 }
 
 
+log = logging.getLogger("jalert")
+
+
 class ZoteroSyncError(RuntimeError):
     """Raised when Zotero API synchronization fails."""
 
 
 # ============================================================
-# 基础工具
+# 基础文本处理
 # ============================================================
 
 def _clean(value) -> str:
@@ -89,27 +105,88 @@ def _normalize_title(value: str) -> str:
     return value.strip()
 
 
+# ============================================================
+# HTTP / 限流处理
+# ============================================================
+
+def _parse_wait_seconds(
+    value,
+) -> float | None:
+
+    if value is None:
+        return None
+
+    try:
+        seconds = float(
+            str(value).strip()
+        )
+
+        if seconds > 0:
+            return seconds
+
+    except (
+        TypeError,
+        ValueError,
+    ):
+        pass
+
+    return None
+
+
+def _retry_wait(
+    exc,
+    attempt: int,
+) -> float:
+
+    retry_after = None
+
+    if isinstance(
+        exc,
+        urllib.error.HTTPError,
+    ):
+
+        retry_after = _parse_wait_seconds(
+            exc.headers.get(
+                "Retry-After"
+            )
+        )
+
+    # Zotero 明确给了 Retry-After 时，
+    # 必须至少等待它要求的时间。
+    if retry_after is not None:
+        return retry_after
+
+    # 否则指数退避：
+    # 2, 4, 8, 16, 32, 60 秒
+    return min(
+        2 ** (attempt + 1),
+        MAX_BACKOFF_SECONDS,
+    )
+
+
 def _headers(
     api_key: str,
     *,
     json_body: bool = False,
-    write_token: bool = False,
+    write_token: str = "",
 ) -> dict[str, str]:
 
     headers = {
         "Zotero-API-Key": api_key,
         "Zotero-API-Version": API_VERSION,
         "Accept": "application/json",
-        "User-Agent": "journal-alert/4.1",
+        "User-Agent": "journal-alert/4.1.1",
     }
 
     if json_body:
-        headers["Content-Type"] = "application/json"
+        headers[
+            "Content-Type"
+        ] = "application/json"
 
     if write_token:
-        headers["Zotero-Write-Token"] = (
-            secrets.token_hex(16)
-        )
+        headers[
+            "Zotero-Write-Token"
+        ] = write_token
 
     return headers
 
@@ -122,8 +199,11 @@ def _request(
     path: str,
     params: dict | None = None,
     payload=None,
-    timeout: int = 30,
+    timeout: int = 45,
+    max_retries: int = MAX_RETRIES,
 ):
+
+    method = method.upper()
 
     prefix = (
         f"{ZOTERO_API_BASE}"
@@ -134,99 +214,385 @@ def _request(
     url = prefix + path
 
     if params:
-        url += "?" + urllib.parse.urlencode(
-            params
+
+        url += (
+            "?"
+            + urllib.parse.urlencode(
+                params
+            )
         )
 
     body = None
 
     if payload is not None:
+
         body = json.dumps(
             payload,
             ensure_ascii=False,
         ).encode("utf-8")
 
-    headers = _headers(
-        api_key,
-        json_body=payload is not None,
-        write_token=(
-            method.upper() == "POST"
-        ),
-    )
+    # 一个逻辑写入请求只生成一个 token。
+    # 如果网络重试，不重新生成。
+    write_token = ""
 
-    request = urllib.request.Request(
-        url,
-        data=body,
-        method=method.upper(),
-        headers=headers,
-    )
+    if method == "POST":
 
-    try:
+        write_token = (
+            secrets.token_hex(16)
+        )
 
-        with urllib.request.urlopen(
-            request,
-            timeout=timeout,
-        ) as response:
+    last_error = None
 
-            raw = response.read()
+    for attempt in range(
+        max_retries + 1
+    ):
 
-            if not raw:
-                return None
-
-            text = raw.decode(
-                "utf-8",
-                errors="replace",
-            )
-
-            try:
-                return json.loads(text)
-
-            except json.JSONDecodeError:
-                return text
-
-    except urllib.error.HTTPError as exc:
+        request = urllib.request.Request(
+            url,
+            data=body,
+            method=method,
+            headers=_headers(
+                api_key,
+                json_body=(
+                    payload is not None
+                ),
+                write_token=write_token,
+            ),
+        )
 
         try:
-            detail = exc.read().decode(
-                "utf-8",
-                errors="replace",
-            )
 
-        except Exception:
-            detail = ""
+            with urllib.request.urlopen(
+                request,
+                timeout=timeout,
+            ) as response:
 
-        raise ZoteroSyncError(
-            f"Zotero HTTP {exc.code}: "
-            f"{detail[:500]}"
-        ) from exc
+                raw = response.read()
 
-    except urllib.error.URLError as exc:
+                # --------------------------------------------
+                # Zotero Backoff
+                # --------------------------------------------
 
-        raise ZoteroSyncError(
-            f"Zotero network error: {exc}"
-        ) from exc
+                backoff = (
+                    _parse_wait_seconds(
+                        response.headers.get(
+                            "Backoff"
+                        )
+                    )
+                )
+
+                if backoff is not None:
+
+                    log.warning(
+                        (
+                            "Zotero requested "
+                            "Backoff: %.0f second(s)"
+                        ),
+                        backoff,
+                    )
+
+                    time.sleep(
+                        backoff
+                    )
+
+                if not raw:
+                    return None
+
+                text = raw.decode(
+                    "utf-8",
+                    errors="replace",
+                )
+
+                try:
+
+                    return json.loads(
+                        text
+                    )
+
+                except json.JSONDecodeError:
+
+                    return text
+
+        except urllib.error.HTTPError as exc:
+
+            last_error = exc
+
+            try:
+
+                detail = (
+                    exc.read().decode(
+                        "utf-8",
+                        errors="replace",
+                    )
+                )
+
+            except Exception:
+
+                detail = ""
+
+            # 429 = 限流
+            # 409 = Zotero 文库暂时锁定
+            # 5xx = 服务端暂时错误
+            retryable = exc.code in {
+                409,
+                429,
+                500,
+                502,
+                503,
+                504,
+            }
+
+            if (
+                retryable
+                and attempt < max_retries
+            ):
+
+                wait_seconds = (
+                    _retry_wait(
+                        exc,
+                        attempt,
+                    )
+                )
+
+                log.warning(
+                    (
+                        "Zotero HTTP %d; "
+                        "retry %d/%d after "
+                        "%.0f second(s)"
+                    ),
+                    exc.code,
+                    attempt + 1,
+                    max_retries,
+                    wait_seconds,
+                )
+
+                time.sleep(
+                    wait_seconds
+                )
+
+                continue
+
+            raise ZoteroSyncError(
+                (
+                    f"Zotero HTTP "
+                    f"{exc.code}: "
+                    f"{detail[:500]}"
+                )
+            ) from exc
+
+        except urllib.error.URLError as exc:
+
+            last_error = exc
+
+            if attempt < max_retries:
+
+                wait_seconds = min(
+                    2 ** (
+                        attempt + 1
+                    ),
+                    MAX_BACKOFF_SECONDS,
+                )
+
+                log.warning(
+                    (
+                        "Zotero network error; "
+                        "retry %d/%d after "
+                        "%.0f second(s): %s"
+                    ),
+                    attempt + 1,
+                    max_retries,
+                    wait_seconds,
+                    str(exc)[:200],
+                )
+
+                time.sleep(
+                    wait_seconds
+                )
+
+                continue
+
+            raise ZoteroSyncError(
+                f"Zotero network error: "
+                f"{exc}"
+            ) from exc
+
+    raise ZoteroSyncError(
+        "Zotero request failed after "
+        f"{max_retries} retries: "
+        f"{last_error}"
+    )
 
 
 # ============================================================
-# Zotero 连接测试
+# 一次读取 Zotero 文库
 # ============================================================
 
-def check_connection(
+def _all_top_items(
     user_id: str,
     api_key: str,
-) -> None:
-    """Verify that Zotero credentials can access the library."""
+) -> list[dict]:
+    """Load all top-level Zotero items.
 
-    _request(
-        user_id=user_id,
-        api_key=api_key,
-        method="GET",
-        path="/items",
-        params={
-            "limit": 1,
-            "format": "json",
-        },
+    Attachments and notes are excluded by using /items/top.
+    Results are paginated 100 at a time.
+    """
+
+    result: list[dict] = []
+
+    start = 0
+    limit = 100
+
+    while True:
+
+        rows = _request(
+            user_id=user_id,
+            api_key=api_key,
+            method="GET",
+            path="/items/top",
+            params={
+                "format": "json",
+                "limit": limit,
+                "start": start,
+            },
+        )
+
+        if not isinstance(
+            rows,
+            list,
+        ):
+            break
+
+        result.extend(
+            rows
+        )
+
+        if len(rows) < limit:
+            break
+
+        start += len(rows)
+
+    return result
+
+
+def _build_existing_index(
+    rows: list[dict],
+) -> tuple[
+    dict[str, str],
+    dict[str, str],
+]:
+    """Build DOI and title indexes in memory."""
+
+    doi_index: dict[
+        str,
+        str,
+    ] = {}
+
+    title_index: dict[
+        str,
+        str,
+    ] = {}
+
+    for row in rows:
+
+        if not isinstance(
+            row,
+            dict,
+        ):
+            continue
+
+        data = (
+            row.get(
+                "data",
+                {},
+            )
+            or {}
+        )
+
+        key = (
+            row.get("key")
+            or data.get("key")
+            or ""
+        )
+
+        doi = _normalize_doi(
+            data.get(
+                "DOI",
+                "",
+            )
+        )
+
+        title = _normalize_title(
+            data.get(
+                "title",
+                "",
+            )
+        )
+
+        if doi and doi not in doi_index:
+
+            doi_index[
+                doi
+            ] = key
+
+        if (
+            title
+            and title
+            not in title_index
+        ):
+
+            title_index[
+                title
+            ] = key
+
+    return (
+        doi_index,
+        title_index,
     )
+
+
+def _find_existing_local(
+    item,
+    *,
+    doi_index: dict[str, str],
+    title_index: dict[str, str],
+) -> str | None:
+
+    doi = _normalize_doi(
+        getattr(
+            item,
+            "doi",
+            "",
+        )
+    )
+
+    if (
+        doi
+        and doi in doi_index
+    ):
+
+        return doi_index[
+            doi
+        ]
+
+    title = _normalize_title(
+        getattr(
+            item,
+            "title",
+            "",
+        )
+    )
+
+    if (
+        title
+        and title
+        in title_index
+    ):
+
+        return title_index[
+            title
+        ]
+
+    return None
 
 
 # ============================================================
@@ -263,7 +629,9 @@ def _all_collections(
         ):
             break
 
-        result.extend(rows)
+        result.extend(
+            rows
+        )
 
         if len(rows) < limit:
             break
@@ -278,25 +646,42 @@ def find_collection(
     api_key: str,
     name: str,
 ) -> str | None:
-    """Find an existing top-level Collection by exact name."""
 
-    for row in _all_collections(
+    rows = _all_collections(
         user_id,
         api_key,
-    ):
+    )
+
+    for row in rows:
+
+        if not isinstance(
+            row,
+            dict,
+        ):
+            continue
 
         data = (
-            row.get("data", {})
-            if isinstance(row, dict)
-            else {}
+            row.get(
+                "data",
+                {},
+            )
+            or {}
+        )
+
+        row_name = _clean(
+            data.get(
+                "name",
+                "",
+            )
+        )
+
+        parent = data.get(
+            "parentCollection"
         )
 
         if (
-            _clean(data.get("name"))
-            == name
-            and not data.get(
-                "parentCollection"
-            )
+            row_name == name
+            and not parent
         ):
 
             return (
@@ -305,6 +690,71 @@ def find_collection(
             )
 
     return None
+
+
+def _response_success_map(
+    response,
+) -> dict:
+
+    if not isinstance(
+        response,
+        dict,
+    ):
+        return {}
+
+    successful = response.get(
+        "successful"
+    )
+
+    if isinstance(
+        successful,
+        dict,
+    ):
+        return successful
+
+    success = response.get(
+        "success"
+    )
+
+    if isinstance(
+        success,
+        dict,
+    ):
+        return success
+
+    return {}
+
+
+def _extract_created_key(
+    value,
+) -> str:
+
+    if isinstance(
+        value,
+        str,
+    ):
+        return value
+
+    if isinstance(
+        value,
+        dict,
+    ):
+
+        key = (
+            value.get("key")
+            or (
+                value.get(
+                    "data",
+                    {},
+                )
+                or {}
+            ).get("key")
+        )
+
+        if key:
+            return str(key)
+
+    return ""
 
 
 def create_collection(
@@ -326,54 +776,51 @@ def create_collection(
         ],
     )
 
-    if not isinstance(
+    successful = (
+        _response_success_map(
+            response
+        )
+    )
+
+    saved = successful.get(
+        "0"
+    )
+
+    key = _extract_created_key(
+        saved
+    )
+
+    if key:
+        return key
+
+    failed = {}
+
+    if isinstance(
         response,
         dict,
     ):
+
+        failed = (
+            response.get(
+                "failed"
+            )
+            or {}
+        )
+
+    if failed:
+
         raise ZoteroSyncError(
-            "Unexpected response while "
-            "creating Zotero Collection."
+            (
+                "Zotero Collection "
+                "creation failed: "
+                + json.dumps(
+                    failed,
+                    ensure_ascii=False,
+                )[:500]
+            )
         )
 
-    successful = (
-        response.get("successful")
-        or response.get("success")
-        or {}
-    )
-
-    saved = (
-        successful.get("0")
-        if isinstance(
-            successful,
-            dict,
-        )
-        else None
-    )
-
-    if isinstance(
-        saved,
-        str,
-    ):
-        return saved
-
-    if isinstance(
-        saved,
-        dict,
-    ):
-
-        key = (
-            saved.get("key")
-            or saved.get(
-                "data",
-                {},
-            ).get("key")
-        )
-
-        if key:
-            return key
-
-    # 极少数 API 响应形式不同，
-    # 再读取一次 Collection 列表确认。
+    # 极少数情况下重新读取确认
     key = find_collection(
         user_id,
         api_key,
@@ -384,8 +831,11 @@ def create_collection(
         return key
 
     raise ZoteroSyncError(
-        f"Collection created but key "
-        f"could not be resolved: {name}"
+        (
+            "Collection was requested "
+            "but no key was returned: "
+            f"{name}"
+        )
     )
 
 
@@ -402,7 +852,11 @@ def ensure_collection(
     )
 
     if existing:
-        return existing, False
+
+        return (
+            existing,
+            False,
+        )
 
     created = create_collection(
         user_id,
@@ -410,7 +864,10 @@ def ensure_collection(
         name,
     )
 
-    return created, True
+    return (
+        created,
+        True,
+    )
 
 
 # ============================================================
@@ -421,20 +878,28 @@ def _author_to_creator(
     author: str,
 ) -> dict:
 
-    author = _clean(author)
+    author = _clean(
+        author
+    )
 
     if not author:
         return {}
 
+    # Crossref 有时提供：
     # Last, First
     if "," in author:
 
-        last_name, first_name = (
-            part.strip()
-            for part in author.split(
-                ",",
-                1,
-            )
+        parts = author.split(
+            ",",
+            1,
+        )
+
+        last_name = (
+            parts[0].strip()
+        )
+
+        first_name = (
+            parts[1].strip()
         )
 
         return {
@@ -455,14 +920,15 @@ def _author_to_creator(
             "lastName": parts[-1],
         }
 
-    # 单字段姓名
     return {
         "creatorType": "author",
         "name": author,
     }
 
 
-def _creators(item) -> list[dict]:
+def _creators(
+    item,
+) -> list[dict]:
 
     authors = getattr(
         item,
@@ -470,15 +936,18 @@ def _creators(item) -> list[dict]:
         [],
     ) or []
 
-    result = []
+    result: list[dict] = []
 
     for author in authors:
 
-        creator = _author_to_creator(
-            author
+        creator = (
+            _author_to_creator(
+                author
+            )
         )
 
         if creator:
+
             result.append(
                 creator
             )
@@ -487,141 +956,7 @@ def _creators(item) -> list[dict]:
 
 
 # ============================================================
-# Zotero 去重
-# ============================================================
-
-def _search_zotero(
-    user_id: str,
-    api_key: str,
-    query: str,
-) -> list[dict]:
-
-    rows = _request(
-        user_id=user_id,
-        api_key=api_key,
-        method="GET",
-        path="/items",
-        params={
-            "q": query,
-            "qmode": "everything",
-            "format": "json",
-            "limit": 25,
-        },
-    )
-
-    if not isinstance(
-        rows,
-        list,
-    ):
-        return []
-
-    return rows
-
-
-def find_existing_item(
-    user_id: str,
-    api_key: str,
-    item,
-) -> dict | None:
-
-    doi = _normalize_doi(
-        getattr(
-            item,
-            "doi",
-            "",
-        )
-    )
-
-    title = _normalize_title(
-        getattr(
-            item,
-            "title",
-            "",
-        )
-    )
-
-    # --------------------------------------------------------
-    # 1. DOI 优先
-    # --------------------------------------------------------
-
-    if doi:
-
-        candidates = _search_zotero(
-            user_id,
-            api_key,
-            doi,
-        )
-
-        for candidate in candidates:
-
-            data = candidate.get(
-                "data",
-                {},
-            )
-
-            candidate_doi = (
-                _normalize_doi(
-                    data.get(
-                        "DOI",
-                        "",
-                    )
-                )
-            )
-
-            if (
-                candidate_doi
-                and candidate_doi == doi
-            ):
-                return candidate
-
-    # --------------------------------------------------------
-    # 2. DOI 不存在时按标题兜底
-    # --------------------------------------------------------
-
-    raw_title = _clean(
-        getattr(
-            item,
-            "title",
-            "",
-        )
-    )
-
-    if raw_title:
-
-        candidates = _search_zotero(
-            user_id,
-            api_key,
-            raw_title,
-        )
-
-        for candidate in candidates:
-
-            data = candidate.get(
-                "data",
-                {},
-            )
-
-            candidate_title = (
-                _normalize_title(
-                    data.get(
-                        "title",
-                        "",
-                    )
-                )
-            )
-
-            if (
-                candidate_title
-                and candidate_title
-                == title
-            ):
-                return candidate
-
-    return None
-
-
-# ============================================================
-# Zotero Item
+# Zotero Item 构建
 # ============================================================
 
 def build_zotero_item(
@@ -663,15 +998,17 @@ def build_zotero_item(
         or []
     )
 
-    relevance_reason = _clean(
-        extra_info.get(
-            "relevance_reason",
-            "",
+    relevance_reason = (
+        _clean(
+            extra_info.get(
+                "relevance_reason",
+                "",
+            )
         )
     )
 
     # --------------------------------------------------------
-    # Zotero Tags
+    # Tags
     # --------------------------------------------------------
 
     tag_names = [
@@ -687,21 +1024,25 @@ def build_zotero_item(
         methods
     )
 
-    # 去重，保持顺序
-    seen = set()
+    seen_tags = set()
+
     tags = []
 
     for tag in tag_names:
 
-        tag = _clean(tag)
+        tag = _clean(
+            tag
+        )
 
         if (
             not tag
-            or tag in seen
+            or tag in seen_tags
         ):
             continue
 
-        seen.add(tag)
+        seen_tags.add(
+            tag
+        )
 
         tags.append(
             {
@@ -727,26 +1068,32 @@ def build_zotero_item(
     if research_tags:
 
         extra_lines.append(
-            "Research Use: "
-            + " / ".join(
-                research_tags
+            (
+                "Research Use: "
+                + " / ".join(
+                    research_tags
+                )
             )
         )
 
     if methods:
 
         extra_lines.append(
-            "Methods: "
-            + " / ".join(
-                methods
+            (
+                "Methods: "
+                + " / ".join(
+                    methods
+                )
             )
         )
 
     if relevance_reason:
 
         extra_lines.append(
-            "Relevance: "
-            + relevance_reason
+            (
+                "Relevance: "
+                + relevance_reason
+            )
         )
 
     doi = _normalize_doi(
@@ -759,6 +1106,7 @@ def build_zotero_item(
 
     payload = {
         "itemType": "journalArticle",
+
         "title": _clean(
             getattr(
                 item,
@@ -766,9 +1114,11 @@ def build_zotero_item(
                 "",
             )
         ),
+
         "creators": _creators(
             item
         ),
+
         "abstractNote": _clean(
             getattr(
                 item,
@@ -776,6 +1126,7 @@ def build_zotero_item(
                 "",
             )
         ),
+
         "publicationTitle": _clean(
             getattr(
                 item,
@@ -783,6 +1134,7 @@ def build_zotero_item(
                 "",
             )
         ),
+
         "date": _clean(
             getattr(
                 item,
@@ -790,7 +1142,17 @@ def build_zotero_item(
                 "",
             )
         ),
+
         "DOI": doi,
+
+        "ISSN": _clean(
+            getattr(
+                item,
+                "issn",
+                "",
+            )
+        ),
+
         "url": _clean(
             getattr(
                 item,
@@ -798,10 +1160,13 @@ def build_zotero_item(
                 "",
             )
         ),
+
         "extra": "\n".join(
             extra_lines
         ),
+
         "tags": tags,
+
         "collections": [
             collection_key
         ],
@@ -810,91 +1175,129 @@ def build_zotero_item(
     return payload
 
 
-def create_zotero_item(
+# ============================================================
+# 批量创建文献
+# ============================================================
+
+def _chunks(
+    values: list,
+    size: int,
+):
+
+    for start in range(
+        0,
+        len(values),
+        size,
+    ):
+
+        yield values[
+            start:
+            start + size
+        ]
+
+
+def create_items_batch(
+    *,
     user_id: str,
     api_key: str,
-    payload: dict,
-) -> str:
+    payloads: list[dict],
+) -> tuple[
+    int,
+    int,
+]:
+
+    if not payloads:
+
+        return (
+            0,
+            0,
+        )
 
     response = _request(
         user_id=user_id,
         api_key=api_key,
         method="POST",
         path="/items",
-        payload=[
-            payload
-        ],
+        payload=payloads,
     )
 
     if not isinstance(
         response,
         dict,
     ):
+
         raise ZoteroSyncError(
-            "Unexpected Zotero item "
-            "creation response."
+            (
+                "Unexpected Zotero "
+                "batch response."
+            )
         )
 
     successful = (
-        response.get("successful")
-        or response.get("success")
-        or {}
-    )
-
-    saved = (
-        successful.get("0")
-        if isinstance(
-            successful,
-            dict,
+        _response_success_map(
+            response
         )
-        else None
     )
-
-    if isinstance(
-        saved,
-        str,
-    ):
-        return saved
-
-    if isinstance(
-        saved,
-        dict,
-    ):
-
-        key = (
-            saved.get("key")
-            or saved.get(
-                "data",
-                {},
-            ).get("key")
-        )
-
-        if key:
-            return key
 
     failed = (
-        response.get("failed")
+        response.get(
+            "failed"
+        )
         or {}
     )
+
+    unchanged = (
+        response.get(
+            "unchanged"
+        )
+        or {}
+    )
+
+    created_count = len(
+        successful
+    )
+
+    failed_count = len(
+        failed
+    )
+
+    # unchanged 不视为失败
+    if unchanged:
+
+        log.info(
+            (
+                "Zotero batch unchanged: "
+                "%d"
+            ),
+            len(unchanged),
+        )
 
     if failed:
 
-        raise ZoteroSyncError(
-            "Zotero item rejected: "
-            + json.dumps(
-                failed,
-                ensure_ascii=False,
-            )[:500]
-        )
+        for index, detail in (
+            failed.items()
+        ):
 
-    raise ZoteroSyncError(
-        "Zotero item creation "
-        "returned no item key."
+            log.warning(
+                (
+                    "Zotero item index %s "
+                    "failed: %s"
+                ),
+                index,
+                json.dumps(
+                    detail,
+                    ensure_ascii=False,
+                )[:500],
+            )
+
+    return (
+        created_count,
+        failed_count,
     )
 
 
 # ============================================================
-# 对外统一同步接口
+# 对外统一同步入口
 # ============================================================
 
 def sync_entries(
@@ -943,9 +1346,11 @@ def sync_entries(
     ):
 
         log.warning(
-            "Zotero sync enabled but "
-            "ZOTERO_USER_ID or "
-            "ZOTERO_API_KEY is missing"
+            (
+                "Zotero sync enabled "
+                "but ZOTERO_USER_ID or "
+                "ZOTERO_API_KEY is missing"
+            )
         )
 
         return {
@@ -962,11 +1367,9 @@ def sync_entries(
         "Zotero credentials detected"
     )
 
-    # 验证连接，但绝不打印密钥
-    check_connection(
-        user_id,
-        api_key,
-    )
+    # --------------------------------------------------------
+    # 1. 按等级选择
+    # --------------------------------------------------------
 
     allowed_tiers = set(
         zotero_cfg.get(
@@ -982,7 +1385,9 @@ def sync_entries(
 
     for entry in entries:
 
-        scored = entry["scored"]
+        scored = entry[
+            "scored"
+        ]
 
         tier = getattr(
             scored,
@@ -991,6 +1396,7 @@ def sync_entries(
         )
 
         if tier in allowed_tiers:
+
             selected.append(
                 entry
             )
@@ -998,7 +1404,10 @@ def sync_entries(
     if not selected:
 
         log.info(
-            "Zotero sync: no selected articles"
+            (
+                "Zotero sync: "
+                "no selected articles"
+            )
         )
 
         return {
@@ -1011,54 +1420,131 @@ def sync_entries(
             "credentials": True,
         }
 
+    log.info(
+        (
+            "Zotero sync: "
+            "%d article(s) selected"
+        ),
+        len(selected),
+    )
+
     # --------------------------------------------------------
-    # 先查重
+    # 2. 一次读取 Zotero 文库
+    # --------------------------------------------------------
+
+    existing_rows = (
+        _all_top_items(
+            user_id,
+            api_key,
+        )
+    )
+
+    log.info(
+        (
+            "Zotero library index loaded: "
+            "%d top-level item(s)"
+        ),
+        len(existing_rows),
+    )
+
+    (
+        doi_index,
+        title_index,
+    ) = _build_existing_index(
+        existing_rows
+    )
+
+    # --------------------------------------------------------
+    # 3. 本地查重
     # --------------------------------------------------------
 
     to_create = []
+
     existing_count = 0
 
     for entry in selected:
 
-        existing = find_existing_item(
-            user_id,
-            api_key,
-            entry["item"],
+        item = entry[
+            "item"
+        ]
+
+        existing_key = (
+            _find_existing_local(
+                item,
+                doi_index=doi_index,
+                title_index=title_index,
+            )
         )
 
-        if existing:
+        if existing_key:
 
             existing_count += 1
 
             log.info(
-                "Zotero duplicate skipped: %s",
+                (
+                    "Zotero duplicate skipped: "
+                    "%s"
+                ),
                 getattr(
-                    entry["item"],
+                    item,
                     "title",
                     "",
                 )[:100],
             )
 
-        else:
+            continue
 
-            to_create.append(
-                entry
-            )
-
-    # 没有真正需要导入的文献，
-    # 就不创建一个空的日期 Collection。
-    if not to_create:
-
-        log.info(
-            (
-                "Zotero sync: "
-                "%d selected / "
-                "%d already existing / "
-                "0 new"
-            ),
-            len(selected),
-            existing_count,
+        to_create.append(
+            entry
         )
+
+        # 同一批数据内部也立即加入索引，
+        # 防止当前运行自身产生重复。
+        doi = _normalize_doi(
+            getattr(
+                item,
+                "doi",
+                "",
+            )
+        )
+
+        title = _normalize_title(
+            getattr(
+                item,
+                "title",
+                "",
+            )
+        )
+
+        if doi:
+
+            doi_index[
+                doi
+            ] = "__pending__"
+
+        if title:
+
+            title_index[
+                title
+            ] = "__pending__"
+
+    log.info(
+        (
+            "Zotero dedupe: "
+            "%d selected / "
+            "%d existing / "
+            "%d to create"
+        ),
+        len(selected),
+        existing_count,
+        len(to_create),
+    )
+
+    # --------------------------------------------------------
+    # 4. 没有新内容，不建空日期 Collection
+    # --------------------------------------------------------
+
+    if not to_create:
 
         return {
             "enabled": True,
@@ -1073,94 +1559,183 @@ def sync_entries(
         }
 
     # --------------------------------------------------------
-    # 创建 / 复用当天日期 Collection
+    # 5. 创建当天日期 Collection
     # --------------------------------------------------------
 
-    collection_name = day
+    if zotero_cfg.get(
+        "daily_collection",
+        True,
+    ):
 
-    collection_key, created_collection = (
-        ensure_collection(
-            user_id,
-            api_key,
-            collection_name,
+        collection_name = day
+
+    else:
+
+        collection_name = (
+            zotero_cfg.get(
+                "collection_name",
+                "Journal Alert",
+            )
         )
+
+    (
+        collection_key,
+        created_collection,
+    ) = ensure_collection(
+        user_id,
+        api_key,
+        collection_name,
     )
 
     if created_collection:
 
         log.info(
-            "Zotero Collection created: %s",
+            (
+                "Zotero Collection created: "
+                "%s"
+            ),
             collection_name,
         )
 
     else:
 
         log.info(
-            "Zotero Collection reused: %s",
+            (
+                "Zotero Collection reused: "
+                "%s"
+            ),
             collection_name,
         )
 
     # --------------------------------------------------------
-    # 创建论文
+    # 6. 构建全部待写入 payload
+    # --------------------------------------------------------
+
+    payload_entries = []
+
+    for entry in to_create:
+
+        payload_entries.append(
+            (
+                entry,
+                build_zotero_item(
+                    entry["item"],
+                    entry["scored"],
+                    collection_key=(
+                        collection_key
+                    ),
+                ),
+            )
+        )
+
+    # --------------------------------------------------------
+    # 7. 批量写入
     # --------------------------------------------------------
 
     created_count = 0
     failed_count = 0
 
-    for entry in to_create:
+    total_batches = (
+        (
+            len(payload_entries)
+            + BATCH_SIZE
+            - 1
+        )
+        // BATCH_SIZE
+    )
 
-        item = entry["item"]
-        scored = entry["scored"]
+    for batch_number, batch in enumerate(
+        _chunks(
+            payload_entries,
+            BATCH_SIZE,
+        ),
+        start=1,
+    ):
+
+        payloads = [
+            payload
+            for _entry, payload
+            in batch
+        ]
+
+        log.info(
+            (
+                "Zotero batch %d/%d: "
+                "uploading %d item(s)"
+            ),
+            batch_number,
+            total_batches,
+            len(payloads),
+        )
 
         try:
 
-            payload = build_zotero_item(
-                item,
-                scored,
-                collection_key=collection_key,
+            (
+                batch_created,
+                batch_failed,
+            ) = create_items_batch(
+                user_id=user_id,
+                api_key=api_key,
+                payloads=payloads,
             )
 
-            item_key = create_zotero_item(
-                user_id,
-                api_key,
-                payload,
+            created_count += (
+                batch_created
             )
 
-            created_count += 1
+            failed_count += (
+                batch_failed
+            )
 
             log.info(
-                "Zotero item created: %s [%s]",
-                getattr(
-                    item,
-                    "title",
-                    "",
-                )[:100],
-                item_key,
+                (
+                    "Zotero batch %d/%d: "
+                    "created=%d failed=%d"
+                ),
+                batch_number,
+                total_batches,
+                batch_created,
+                batch_failed,
             )
 
         except Exception as exc:
 
-            failed_count += 1
+            # 整批失败时记录，但不能影响日报和微信
+            failed_count += len(
+                payloads
+            )
 
             log.warning(
-                "Zotero item failed: %s -> %s",
-                getattr(
-                    item,
-                    "title",
-                    "",
-                )[:100],
-                str(exc)[:300],
+                (
+                    "Zotero batch %d/%d "
+                    "failed after retries: %s"
+                ),
+                batch_number,
+                total_batches,
+                str(exc)[:500],
             )
+
+    # --------------------------------------------------------
+    # 8. 最终统计
+    # --------------------------------------------------------
 
     result = {
         "enabled": True,
+
         "selected": len(
             selected
         ),
+
         "created": created_count,
+
         "existing": existing_count,
+
         "failed": failed_count,
-        "collection": collection_name,
+
+        "collection": (
+            collection_name
+        ),
+
         "credentials": True,
     }
 
