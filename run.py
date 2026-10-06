@@ -416,7 +416,7 @@ def run(args: argparse.Namespace) -> int:
                 entry["scored"].score,
                 tiers,
             )
-             if not args.dry_run:
+         if not args.dry_run:
 
             try:
 
