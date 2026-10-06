@@ -47,7 +47,7 @@
     },
     {
       "label": "无机氮",
-      "weight": 5,
+      "weight": 3,
       "terms": [
         "inorganic nitrogen",
         "nitrate",
@@ -63,7 +63,7 @@
     },
     {
       "label": "氮转化",
-      "weight": 4,
+      "weight": 3,
       "terms": [
         "nitrogen transformation",
         "nitrogen cycling",
@@ -80,7 +80,7 @@
     },
     {
       "label": "土壤总氮与氮储量",
-      "weight": 4,
+      "weight": 3,
       "terms": [
         "soil total nitrogen",
         "total soil nitrogen",
@@ -94,7 +94,7 @@
     },
     {
       "label": "黑土与Mollisol",
-      "weight": 4,
+      "weight": 2,
       "terms": [
         "mollisol",
         "mollisols",
