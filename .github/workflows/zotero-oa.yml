@@ -47,7 +47,7 @@ jobs:
           BACKFILL_LIMIT: ${{ inputs.limit }}
           DRY_RUN: ${{ inputs.dry_run }}
         run: |
-          set -eu
+          set -euo pipefail
           LIMIT="${BACKFILL_LIMIT:-5}"
           ARGS=(--limit "$LIMIT")
           if [ "${DRY_RUN:-false}" = "true" ]; then
