@@ -557,7 +557,7 @@ def build_markdown(
                     "- **方法识别**："
                     "标题和摘要中暂未识别到明确方法"
                 )
-                oa_line = _oa_markdown(
+            oa_line = _oa_markdown(
                 item
             )
 
