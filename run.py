@@ -396,13 +396,58 @@ def run(args: argparse.Namespace) -> int:
     log.info("keyword matched %d/%d items (min_score=%d)", len(matched), len(items), min_score)
 
     with Store(cfg["state_db"]) as store:
-        known = store.known_uids([entry["item"].uid for entry in matched])
-        new_entries = [entry for entry in matched if entry["item"].uid not in known]
+               known = store.known_uids(
+            [
+                entry["item"].uid
+                for entry in matched
+            ]
+        )
+
+        new_entries = [
+            entry
+            for entry in matched
+            if entry["item"].uid not in known
+        ]
+
         for entry in new_entries:
-            entry["scored"].tier = tier_of(entry["scored"].score, tiers)
+            entry["scored"].tier = tier_of(
+                entry["scored"].score,
+                tiers,
+            )
+
         if not args.dry_run:
-            store.save([(e["item"], e["scored"]) for e in new_entries])
-        log.info("new items: %d (已存在 %d)", len(new_entries), len(matched) - len(new_entries))
+
+            store.save(
+                [
+                    (
+                        entry["item"],
+                        entry["scored"],
+                    )
+                    for entry in new_entries
+                ]
+            )
+
+            refreshed = store.refresh_metadata(
+                [
+                    (
+                        entry["item"],
+                        entry["scored"],
+                    )
+                    for entry in matched
+                ]
+            )
+
+            if refreshed:
+                log.info(
+                    "metadata refreshed for %d existing article(s)",
+                    refreshed,
+                )
+
+        log.info(
+            "new items: %d (已存在 %d)",
+            len(new_entries),
+            len(matched) - len(new_entries),
+        )
 
         previous = {} if args.dry_run else load_snapshot(day_snapshot)
         merged_records = list(previous.get("entries", []))
