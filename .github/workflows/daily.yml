@@ -44,7 +44,7 @@ jobs:
       ZOTERO_USER_ID: ${{ secrets.ZOTERO_USER_ID }}
       ZOTERO_API_KEY: ${{ secrets.ZOTERO_API_KEY }}
       # Optional: a real contact address gets OpenAlex/Crossref "polite pool" priority.
-      JALERT_MAILTO: ${{ vars.JALERT_MAILTO }}
+      JALERT_MAILTO: ${{ secrets.JALERT_MAILTO }}
 
     steps:
       - uses: actions/checkout@v5
@@ -112,3 +112,4 @@ jobs:
           else
             echo "没有生成当日报告，请查看上面步骤的日志。" >> "$GITHUB_STEP_SUMMARY"
           fi
+

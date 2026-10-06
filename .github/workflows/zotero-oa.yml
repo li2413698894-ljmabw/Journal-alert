@@ -1,0 +1,57 @@
+name: journal-alert Zotero OA backfill
+
+# Independent, manually triggered maintenance job. It does not run or modify
+# the daily/weekly pipelines or their repository state.
+on:
+  workflow_dispatch:
+    inputs:
+      limit:
+        description: "最多检查多少篇带 DOI 的 Zotero 文献"
+        required: false
+        default: "5"
+      dry_run:
+        description: "只检查，不创建 Zotero 子附件"
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: journal-alert-zotero-oa
+  cancel-in-progress: false
+
+jobs:
+  backfill:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Syntax and deterministic tests
+        run: |
+          python -m compileall -q jalert tests
+          python -m unittest discover -s tests -p "test_*.py" -v
+
+      - name: Backfill legal OA links into Zotero
+        env:
+          ZOTERO_USER_ID: ${{ secrets.ZOTERO_USER_ID }}
+          ZOTERO_API_KEY: ${{ secrets.ZOTERO_API_KEY }}
+          JALERT_MAILTO: ${{ secrets.JALERT_MAILTO }}
+          BACKFILL_LIMIT: ${{ inputs.limit }}
+          DRY_RUN: ${{ inputs.dry_run }}
+        run: |
+          set -eu
+          LIMIT="${BACKFILL_LIMIT:-5}"
+          ARGS=(--limit "$LIMIT")
+          if [ "${DRY_RUN:-false}" = "true" ]; then
+            ARGS+=(--dry-run)
+          fi
+          python -m jalert.zotero_oa "${ARGS[@]}" | tee zotero-oa-result.txt
+          cat zotero-oa-result.txt >> "$GITHUB_STEP_SUMMARY"

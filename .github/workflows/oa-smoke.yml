@@ -20,7 +20,7 @@ jobs:
     timeout-minutes: 5
 
     env:
-      JALERT_MAILTO: ${{ vars.JALERT_MAILTO }}
+      JALERT_MAILTO: ${{ secrets.JALERT_MAILTO }}
       OA_TEST_DOI: ${{ inputs.doi }}
 
     steps:
