@@ -28,6 +28,7 @@ from jalert.fetch import collect_items, http_request  # noqa: E402
 from jalert.report import build_digest, build_markdown  # noqa: E402
 from jalert.score import Scorer, tier_of  # noqa: E402
 from jalert.state import Store, last_run_started  # noqa: E402
+from jalert.zotero_sync import sync_entries
 
 TIER_RANK = {"must_read": 0, "worth_reading": 1, "other": 2}
 
@@ -448,6 +449,64 @@ def run(args: argparse.Namespace) -> int:
             len(new_entries),
             len(matched) - len(new_entries),
         )
+                # ====================================================
+        # Zotero 自动同步
+        # ====================================================
+
+        if not args.dry_run:
+
+            try:
+
+                # 对当前命中的文献进行 Zotero 查重。
+                # 已经存在于 Zotero 的条目会自动跳过，
+                # 所以不会重复导入。
+                #
+                # 第一次启用时也可以顺便把当前时间窗内
+                # 已发现但尚未进入 Zotero 的文章补进去。
+                zotero_result = sync_entries(
+                    entries=matched,
+                    cfg=cfg,
+                    day=day,
+                    log=log,
+                )
+
+                if zotero_result.get(
+                    "enabled"
+                ):
+
+                    log.info(
+                        (
+                            "Zotero result: "
+                            "selected=%d "
+                            "created=%d "
+                            "existing=%d "
+                            "failed=%d"
+                        ),
+                        zotero_result.get(
+                            "selected",
+                            0,
+                        ),
+                        zotero_result.get(
+                            "created",
+                            0,
+                        ),
+                        zotero_result.get(
+                            "existing",
+                            0,
+                        ),
+                        zotero_result.get(
+                            "failed",
+                            0,
+                        ),
+                    )
+
+            except Exception as exc:
+
+                # Zotero 出错不能影响日报、微信推送和数据库。
+                log.warning(
+                    "Zotero sync failed: %s",
+                    str(exc)[:500],
+                )
 
         previous = {} if args.dry_run else load_snapshot(day_snapshot)
         merged_records = list(previous.get("entries", []))
