@@ -550,6 +550,43 @@ def build_markdown(
                         methods
                     )
                 )
+                pdf_url = getattr(
+            item,
+            "oa_pdf_url",
+            "",
+        ) or ""
+
+        oa_url = getattr(
+            item,
+            "oa_url",
+            "",
+        ) or ""
+
+        oa_checked = bool(
+            getattr(
+                item,
+                "oa_checked",
+                False,
+            )
+        )
+
+        if pdf_url:
+
+            detail_lines.append(
+                f"[免费PDF]({pdf_url})"
+            )
+
+        elif oa_url:
+
+            detail_lines.append(
+                f"[开放全文]({oa_url})"
+            )
+
+        elif oa_checked:
+
+            detail_lines.append(
+                "暂无开放全文"
+            )
 
             else:
 
