@@ -1,0 +1,162 @@
+name: journal-alert weekly
+
+# 每周日 20:00 Asia/Shanghai
+# GitHub cron 使用 UTC：
+# 北京时间周日 20:00 = UTC 周日 12:00
+on:
+  schedule:
+    - cron: "0 12 * * 0"
+
+  workflow_dispatch:
+    inputs:
+      days:
+        description: "周报统计最近多少天，默认 7 天"
+        required: false
+        default: "7"
+
+      push:
+        description: "是否发送微信周报"
+        required: false
+        type: boolean
+        default: true
+
+
+permissions:
+  contents: write
+
+
+# 与每日任务使用同一个并发组，
+# 防止日报和周报同时修改 seen.sqlite。
+concurrency:
+  group: journal-alert
+  cancel-in-progress: false
+
+
+jobs:
+  weekly:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    env:
+      TZ: Asia/Shanghai
+
+      # 与 daily.yml 使用同一套推送密钥
+      JALERT_SERVERCHAN_SENDKEY: ${{ secrets.SERVERCHAN_SENDKEY }}
+      JALERT_PUSHPLUS_TOKEN: ${{ secrets.PUSHPLUS_TOKEN }}
+      JALERT_BARK_KEY: ${{ secrets.BARK_KEY }}
+
+      # 可选：OpenAlex / Crossref polite pool
+      JALERT_MAILTO: ${{ vars.JALERT_MAILTO }}
+
+
+    steps:
+
+      # ------------------------------------------------------
+      # 1. 获取仓库
+      # ------------------------------------------------------
+
+      - name: Checkout repository
+        uses: actions/checkout@v5
+
+
+      # ------------------------------------------------------
+      # 2. Python 环境
+      # ------------------------------------------------------
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+
+      # ------------------------------------------------------
+      # 3. 生成周报 + Zotero BibTeX
+      # ------------------------------------------------------
+
+      - name: Generate weekly digest
+        env:
+          INPUT_DAYS: ${{ inputs.days }}
+          INPUT_PUSH: ${{ inputs.push }}
+          EVENT_NAME: ${{ github.event_name }}
+
+        run: |
+          set -eu
+
+          DAYS="${INPUT_DAYS:-7}"
+
+          if [ -z "$DAYS" ]; then
+            DAYS="7"
+          fi
+
+          ARGS="--days ${DAYS}"
+
+          # 手动运行时允许选择“不推送”
+          # 定时任务默认始终推送
+          if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
+            if [ "$INPUT_PUSH" = "false" ]; then
+              ARGS="$ARGS --no-push"
+            fi
+          fi
+
+          echo "Running:"
+          echo "python -m jalert.weekly ${ARGS}"
+
+          python -m jalert.weekly ${ARGS}
+
+
+      # ------------------------------------------------------
+      # 4. 把周报与 Zotero 文献库提交回仓库
+      # ------------------------------------------------------
+
+      - name: Commit weekly report and Zotero library
+        run: |
+          set -eu
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git add weekly/
+          git add zotero/
+
+          # weekly.py 第一次运行时还可能自动升级 seen.sqlite
+          git add state/seen.sqlite
+
+          if git diff --cached --quiet; then
+            echo "nothing changed"
+          else
+            git commit -m "chore(weekly): $(date +%G-W%V) literature digest"
+            git push
+          fi
+
+
+      # ------------------------------------------------------
+      # 5. 在 GitHub Actions 页面显示周报
+      # ------------------------------------------------------
+
+      - name: Job summary
+        if: always()
+        run: |
+          WEEK_ID="$(date +%G-W%V)"
+          REPORT="weekly/${WEEK_ID}.md"
+
+          if [ -f "$REPORT" ]; then
+            cat "$REPORT" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "没有找到周报文件：${REPORT}" >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+
+      # ------------------------------------------------------
+      # 6. 保存一份运行产物
+      # ------------------------------------------------------
+
+      - name: Upload weekly artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: weekly-literature-${{ github.run_number }}
+          path: |
+            weekly/
+            zotero/
+          if-no-files-found: ignore
+          retention-days: 90
