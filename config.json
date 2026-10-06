@@ -1,6 +1,6 @@
 {
   "project": {
-    "name": "大气环境文献日报",
+    "name": "黑土冻融·土壤氮·机器学习文献雷达",
     "timezone": "Asia/Shanghai"
   },
   "window": {
@@ -20,7 +20,7 @@
   "output": {
     "dir": "reports",
     "keep_days": 365,
-    "max_entries": 10,
+    "max_entries": 15,
     "open_after_run": false,
     "write_json_snapshot": true,
     "source_status": "summary",
@@ -28,85 +28,238 @@
   },
   "keywords": [
     {
-      "label": "空气污染",
+      "label": "冻融过程",
+      "weight": 5,
+      "terms": [
+        "freeze-thaw",
+        "freeze thaw",
+        "freeze-thaw cycle",
+        "freeze-thaw cycles",
+        "freezing-thawing",
+        "freezing thawing",
+        "freezing-thawing cycle",
+        "soil freezing",
+        "soil freeze-thaw",
+        "frozen soil",
+        "repeated freezing",
+        "repeated freeze-thaw"
+      ]
+    },
+    {
+      "label": "无机氮",
+      "weight": 5,
+      "terms": [
+        "inorganic nitrogen",
+        "nitrate",
+        "nitrate nitrogen",
+        "no3-n",
+        "no3 n",
+        "ammonium",
+        "ammonium nitrogen",
+        "nh4-n",
+        "nh4 n",
+        "mineral nitrogen"
+      ]
+    },
+    {
+      "label": "氮转化",
+      "weight": 4,
+      "terms": [
+        "nitrogen transformation",
+        "nitrogen cycling",
+        "nitrogen cycle",
+        "nitrogen mineralization",
+        "nitrogen mineralisation",
+        "net nitrogen mineralization",
+        "nitrification",
+        "denitrification",
+        "ammonification",
+        "nitrogen immobilization",
+        "nitrogen immobilisation"
+      ]
+    },
+    {
+      "label": "土壤总氮与氮储量",
+      "weight": 4,
+      "terms": [
+        "soil total nitrogen",
+        "total soil nitrogen",
+        "total nitrogen",
+        "soil nitrogen",
+        "soil nitrogen stock",
+        "nitrogen stock",
+        "nitrogen storage",
+        "soil nitrogen content"
+      ]
+    },
+    {
+      "label": "黑土与Mollisol",
+      "weight": 4,
+      "terms": [
+        "mollisol",
+        "mollisols",
+        "black soil",
+        "black soils",
+        "black earth",
+        "chernozem",
+        "chernozems",
+        "northeast china black soil",
+        "northeastern china black soil"
+      ]
+    },
+    {
+      "label": "土壤水分与土层",
+      "weight": 1,
+      "terms": [
+        "soil moisture",
+        "soil water content",
+        "water content",
+        "moisture content",
+        "soil water",
+        "water-filled pore space",
+        "wfps",
+        "soil depth",
+        "soil layer",
+        "soil profile"
+      ]
+    },
+    {
+      "label": "土壤微生物",
+      "weight": 2,
+      "terms": [
+        "soil microbial",
+        "microbial community",
+        "microbial biomass",
+        "microbial biomass nitrogen",
+        "microbial biomass carbon",
+        "soil microbiome",
+        "microbial diversity",
+        "microbial activity",
+        "soil enzyme",
+        "enzyme activity",
+        "extracellular enzyme"
+      ]
+    },
+    {
+      "label": "机器学习",
+      "weight": 2,
+      "terms": [
+        "machine learning",
+        "artificial intelligence",
+        "data-driven",
+        "data driven",
+        "predictive modeling",
+        "predictive modelling",
+        "ensemble learning"
+      ]
+    },
+    {
+      "label": "机器学习算法",
+      "weight": 1,
+      "terms": [
+        "random forest",
+        "random forests",
+        "xgboost",
+        "lightgbm",
+        "gradient boosting",
+        "support vector machine",
+        "support vector regression",
+        "neural network",
+        "artificial neural network",
+        "deep learning",
+        "elastic net",
+        "extra trees",
+        "extremely randomized trees",
+        "catboost"
+      ]
+    },
+    {
+      "label": "可解释机器学习",
       "weight": 3,
       "terms": [
-        "air pollution",
-        "air pollutant",
-        "air quality",
-        "particulate matter",
-        "pm2.5",
-        "pm10",
-        "ultrafine particle",
-        "aerosol",
-        "ozone",
-        "no2",
-        "so2",
-        "haze",
-        "smog",
-        "emission inventory",
-        "anthropogenic emission",
-        "exposure assessment"
+        "shap",
+        "shapley additive explanations",
+        "shapley value",
+        "explainable ai",
+        "explainable artificial intelligence",
+        "interpretable machine learning",
+        "model interpretability",
+        "feature importance",
+        "permutation importance",
+        "partial dependence",
+        "partial dependence plot",
+        "accumulated local effects"
+      ]
+    },
+    {
+      "label": "模型验证与泛化",
+      "weight": 3,
+      "terms": [
+        "external validation",
+        "independent validation",
+        "spatial cross-validation",
+        "spatial cross validation",
+        "nested cross-validation",
+        "nested cross validation",
+        "leave-one-group-out",
+        "leave one group out",
+        "leave-one-site-out",
+        "leave one site out",
+        "leave-one-location-out",
+        "cross-site validation",
+        "cross-domain validation",
+        "model generalization",
+        "model generalisation",
+        "generalizability",
+        "generalisation ability"
+      ]
+    },
+    {
+      "label": "迁移学习与域适应",
+      "weight": 3,
+      "terms": [
+        "transfer learning",
+        "domain adaptation",
+        "domain generalization",
+        "domain generalisation",
+        "transferability",
+        "cross-domain",
+        "cross domain",
+        "knowledge transfer"
+      ]
+    },
+    {
+      "label": "数字土壤制图",
+      "weight": 3,
+      "terms": [
+        "digital soil mapping",
+        "digital soil assessment",
+        "soil mapping",
+        "soil property mapping",
+        "soil property prediction",
+        "soil attribute prediction",
+        "spatial prediction",
+        "pedometrics",
+        "soil spatial variability",
+        "spatial soil prediction"
       ]
     },
     {
       "label": "遥感",
-      "weight": 3,
+      "weight": 1,
       "terms": [
         "remote sensing",
-        "satellite",
-        "satellite observation",
-        "modis",
-        "viirs",
-        "tropomi",
-        "omi",
+        "satellite remote sensing",
+        "earth observation",
         "landsat",
-        "sentinel-5p",
+        "sentinel-2",
+        "sentinel 2",
+        "modis",
         "hyperspectral",
-        "lidar",
-        "retrieval algorithm",
-        "geostationary",
-        "aerosol optical depth",
-        "aod"
-      ]
-    },
-    {
-      "label": "大气化学",
-      "weight": 3,
-      "terms": [
-        "atmospheric chemistry",
-        "atmospheric oxidation",
-        "photochemistry",
-        "photochemical",
-        "secondary organic aerosol",
-        "soa",
-        "nox",
-        "voc",
-        "volatile organic",
-        "chemical transport model",
-        "heterogeneous chemistry",
-        "atmospheric lifetime",
-        "radical chemistry",
-        "oh radical"
-      ]
-    },
-    {
-      "label": "生物地球化学",
-      "weight": 3,
-      "terms": [
-        "biogeochemistry",
-        "biogeochemical",
-        "carbon cycle",
-        "nitrogen cycle",
-        "nutrient cycling",
-        "methane",
-        "ch4 flux",
-        "co2 flux",
-        "carbon flux",
-        "terrestrial carbon",
-        "soil carbon",
-        "nitrous oxide",
-        "n2o"
+        "multispectral",
+        "vegetation index",
+        "spectral index",
+        "spectroscopy"
       ]
     }
   ],
@@ -122,105 +275,103 @@
     "in this issue",
     "issue information",
     "table of contents",
-    "call for papers"
+    "call for papers",
+    "clinical trial",
+    "cancer patient",
+    "tumor classification",
+    "tumour classification",
+    "medical imaging",
+    "stock market",
+    "financial market",
+    "cryptocurrency",
+    "autonomous driving",
+    "speech recognition"
   ],
   "exclude_doi_prefixes": [
     "10.1038/d41586"
   ],
   "tiers": {
-    "must_read": 12,
-    "worth_reading": 6,
-    "min_score": 3
+    "must_read": 15,
+    "worth_reading": 8,
+    "min_score": 5
   },
   "journals": [
     {
-      "name": "Nature",
-      "issn": "0028-0836",
-      "rss": "https://www.nature.com/nature.rss",
+      "name": "Geoderma",
+      "issn": "0016-7061",
+      "rss": "https://rss.sciencedirect.com/publication/science/00167061",
       "enabled": true
     },
     {
-      "name": "Science",
-      "issn": "0036-8075",
-      "rss": "https://www.science.org/action/showFeed?type=etoc&feed=rss&jc=science",
+      "name": "Soil Biology & Biochemistry",
+      "issn": "0038-0717",
+      "rss": "https://rss.sciencedirect.com/publication/science/00380717",
       "enabled": true
     },
     {
-      "name": "Nature Climate Change",
-      "issn": "1758-6798",
-      "rss": "https://www.nature.com/nclimate.rss",
+      "name": "Soil & Tillage Research",
+      "issn": "0167-1987",
+      "rss": "https://rss.sciencedirect.com/publication/science/01671987",
       "enabled": true
     },
     {
-      "name": "Nature Geoscience",
-      "issn": "1752-0908",
-      "rss": "https://www.nature.com/ngeo.rss",
+      "name": "CATENA",
+      "issn": "0341-8162",
+      "rss": "https://rss.sciencedirect.com/publication/science/03418162",
       "enabled": true
     },
     {
-      "name": "Nature Sustainability",
-      "issn": "2398-9629",
-      "rss": "https://www.nature.com/natsustain.rss",
+      "name": "Applied Soil Ecology",
+      "issn": "0929-1393",
+      "rss": "https://rss.sciencedirect.com/publication/science/09291393",
       "enabled": true
     },
     {
-      "name": "Nature Cities",
-      "issn": "2731-9997",
-      "rss": "https://www.nature.com/natcities.rss",
-      "enabled": true
-    },
-    {
-      "name": "Nature Communications",
-      "issn": "2041-1723",
-      "rss": "https://www.nature.com/ncomms.rss",
-      "enabled": true
-    },
-    {
-      "name": "Science Advances",
-      "issn": "2375-2548",
-      "rss": "https://www.science.org/action/showFeed?type=etoc&feed=rss&jc=sciadv",
-      "enabled": true
-    },
-    {
-      "name": "Earth's Future",
-      "issn": "2328-4277",
-      "rss": "https://agupubs.onlinelibrary.wiley.com/feed/23284277/most-recent",
-      "enabled": true
-    },
-    {
-      "name": "Atmospheric Chemistry and Physics",
-      "issn": "1680-7324",
-      "rss": "https://acp.copernicus.org/xml/rss2_0.xml",
-      "enabled": true
-    },
-    {
-      "name": "Environmental Science & Technology",
-      "issn": "0013-936X",
+      "name": "Plant and Soil",
+      "issn": "0032-079X",
       "rss": "",
       "enabled": true
     },
     {
-      "name": "Environmental Research Letters",
-      "issn": "1748-9326",
-      "rss": "https://iopscience.iop.org/journal/rss/1748-9326",
+      "name": "Biogeochemistry",
+      "issn": "0168-2563",
+      "rss": "",
       "enabled": true
     },
     {
-      "name": "Geophysical Research Letters",
-      "issn": "1944-8007",
-      "rss": "https://agupubs.onlinelibrary.wiley.com/feed/19448007/most-recent",
+      "name": "European Journal of Soil Science",
+      "issn": "1351-0754",
+      "rss": "",
       "enabled": true
     },
     {
-      "name": "Journal of Geophysical Research: Atmospheres",
-      "issn": "2169-8996",
-      "rss": "https://agupubs.onlinelibrary.wiley.com/feed/21698996/most-recent",
+      "name": "Journal of Soils and Sediments",
+      "issn": "1439-0108",
+      "rss": "",
       "enabled": true
     },
     {
-      "name": "Atmospheric Environment",
-      "issn": "1352-2310",
-      "rss": "https://rss.sciencedirect.com/publication/science/13522310",
+      "name": "Agriculture, Ecosystems & Environment",
+      "issn": "0167-8809",
+      "rss": "https://rss.sciencedirect.com/publication/science/01678809",
+      "enabled": true
+    },
+    {
+      "name": "Science of the Total Environment",
+      "issn": "0048-9697",
+      "rss": "https://rss.sciencedirect.com/publication/science/00489697",
+      "enabled": true
+    },
+    {
+      "name": "Computers and Electronics in Agriculture",
+      "issn": "0168-1699",
+      "rss": "https://rss.sciencedirect.com/publication/science/01681699",
+      "enabled": true
+    },
+    {
+      "name": "Ecological Indicators",
+      "issn": "1470-160X",
+      "rss": "https://rss.sciencedirect.com/publication/science/1470160X",
       "enabled": true
     },
     {
@@ -228,13 +379,19 @@
       "issn": "0034-4257",
       "rss": "https://rss.sciencedirect.com/publication/science/00344257",
       "enabled": true
+    },
+    {
+      "name": "Soil Use and Management",
+      "issn": "1475-2743",
+      "rss": "",
+      "enabled": true
     }
   ],
   "push": {
     "enabled": true,
     "skip_when_empty": true,
-    "max_items": 6,
-    "max_chars": 1800,
+    "max_items": 8,
+    "max_chars": 2200,
     "channels": {
       "serverchan": {
         "enabled": true,
