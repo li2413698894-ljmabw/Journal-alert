@@ -78,20 +78,20 @@
         "nitrogen immobilisation"
       ]
     },
-    {
-      "label": "土壤总氮与氮储量",
-      "weight": 3,
-      "terms": [
-        "soil total nitrogen",
-        "total soil nitrogen",
-        "total nitrogen",
-        "soil nitrogen",
-        "soil nitrogen stock",
-        "nitrogen stock",
-        "nitrogen storage",
-        "soil nitrogen content"
-      ]
-    },
+   {
+  "label": "土壤总氮与氮储量",
+  "weight": 3,
+  "terms": [
+    "soil total nitrogen",
+    "total soil nitrogen",
+    "soil nitrogen",
+    "soil nitrogen stock",
+    "soil nitrogen storage",
+    "soil nitrogen content",
+    "soil total n",
+    "total soil n"
+  ]
+},
     {
       "label": "黑土与Mollisol",
       "weight": 2,
@@ -285,6 +285,9 @@
     "financial market",
     "cryptocurrency",
     "autonomous driving",
+    "hydroponic",
+    "hydroponics",
+    "soilless cultivation",
     "speech recognition"
   ],
   "exclude_doi_prefixes": [
