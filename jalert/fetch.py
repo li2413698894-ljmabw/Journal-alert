@@ -53,6 +53,17 @@ class Item:
     authors: list[str] = field(default_factory=list)
     source: str = ""
 
+    # V4.2 Open Access metadata
+    oa_checked: bool = False
+    oa_is_oa: bool = False
+    oa_status: str = ""
+    oa_pdf_url: str = ""
+    oa_url: str = ""
+    oa_version: str = ""
+    oa_host_type: str = ""
+    oa_license: str = ""
+    oa_source: str = ""
+
     def as_dict(self) -> dict:
         return {
             "uid": self.uid,
@@ -65,8 +76,17 @@ class Item:
             "abstract": self.abstract,
             "authors": self.authors,
             "source": self.source,
-        }
 
+            "oa_checked": self.oa_checked,
+            "oa_is_oa": self.oa_is_oa,
+            "oa_status": self.oa_status,
+            "oa_pdf_url": self.oa_pdf_url,
+            "oa_url": self.oa_url,
+            "oa_version": self.oa_version,
+            "oa_host_type": self.oa_host_type,
+            "oa_license": self.oa_license,
+            "oa_source": self.oa_source,
+        }
 
 # --------------------------------------------------------------------------
 # HTTP
