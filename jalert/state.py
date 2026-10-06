@@ -248,7 +248,221 @@ class Store:
         self.conn.commit()
 
         return inserted
+    # ========================================================
+    # 已有文献元数据自动补全
+    # ========================================================
 
+    def refresh_metadata(
+        self,
+        entries: list[
+            tuple[
+                object,
+                object,
+            ]
+        ],
+    ) -> int:
+        """Refresh metadata for articles already present in the database.
+
+        This does NOT create duplicate records and does NOT change first_seen.
+
+        It is mainly used to backfill:
+        - authors
+        - abstract
+        - DOI
+        - URL
+        - ISSN
+        - publication date
+
+        For abstracts, the longer version is retained.
+        For authors, existing data is kept unless it is empty.
+        """
+
+        updated = 0
+
+        for item, _scored in entries:
+
+            uid = getattr(
+                item,
+                "uid",
+                "",
+            )
+
+            if not uid:
+                continue
+
+            row = self.conn.execute(
+                """
+                SELECT
+                    doi,
+                    abstract,
+                    authors,
+                    url,
+                    issn,
+                    pub_date,
+                    source
+                FROM articles
+                WHERE uid = ?
+                """,
+                (uid,),
+            ).fetchone()
+
+            if row is None:
+                continue
+
+            old_abstract = (
+                row["abstract"]
+                or ""
+            )
+
+            new_abstract = (
+                getattr(
+                    item,
+                    "abstract",
+                    "",
+                )
+                or ""
+            )
+
+            # 摘要优先保留更完整、更长的版本
+            abstract = old_abstract
+
+            if (
+                new_abstract
+                and len(new_abstract)
+                > len(old_abstract)
+            ):
+                abstract = new_abstract
+
+            old_authors_raw = (
+                row["authors"]
+                or ""
+            )
+
+            new_authors = (
+                getattr(
+                    item,
+                    "authors",
+                    [],
+                )
+                or []
+            )
+
+            authors = (
+                old_authors_raw
+            )
+
+            # 旧记录没有作者时自动补全
+            if (
+                not old_authors_raw
+                or old_authors_raw
+                in ("[]", "null")
+            ) and new_authors:
+
+                authors = json.dumps(
+                    new_authors,
+                    ensure_ascii=False,
+                )
+
+            doi = (
+                row["doi"]
+                or getattr(
+                    item,
+                    "doi",
+                    "",
+                )
+                or ""
+            )
+
+            url = (
+                row["url"]
+                or getattr(
+                    item,
+                    "url",
+                    "",
+                )
+                or ""
+            )
+
+            issn = (
+                row["issn"]
+                or getattr(
+                    item,
+                    "issn",
+                    "",
+                )
+                or ""
+            )
+
+            pub_date = (
+                row["pub_date"]
+                or getattr(
+                    item,
+                    "date",
+                    "",
+                )
+                or ""
+            )
+
+            source = (
+                row["source"]
+                or getattr(
+                    item,
+                    "source",
+                    "",
+                )
+                or ""
+            )
+
+            changed = (
+                abstract
+                != old_abstract
+                or authors
+                != old_authors_raw
+                or doi
+                != (row["doi"] or "")
+                or url
+                != (row["url"] or "")
+                or issn
+                != (row["issn"] or "")
+                or pub_date
+                != (row["pub_date"] or "")
+                or source
+                != (row["source"] or "")
+            )
+
+            if not changed:
+                continue
+
+            self.conn.execute(
+                """
+                UPDATE articles
+                SET
+                    doi = ?,
+                    abstract = ?,
+                    authors = ?,
+                    url = ?,
+                    issn = ?,
+                    pub_date = ?,
+                    source = ?
+                WHERE uid = ?
+                """,
+                (
+                    doi,
+                    abstract,
+                    authors,
+                    url,
+                    issn,
+                    pub_date,
+                    source,
+                    uid,
+                ),
+            )
+
+            updated += 1
+
+        self.conn.commit()
+
+        return updated
     # ========================================================
     # 每周汇总读取
     # ========================================================
