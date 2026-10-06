@@ -12,9 +12,11 @@ TIER_ORDER = ["must_read", "worth_reading", "other"]
 
 
 def _fmt_date(value: str) -> str:
+    """Elsevier-style feeds stamp the *issue* date, which can be in the future."""
     """Elsevier-style feeds may use a future issue date."""
     if not value:
         return "未知"
+    return f"{value}（在线预发表）" if value > _date.today().isoformat() else value
 
     if value > _date.today().isoformat():
         return f"{value}（在线预发表）"
@@ -33,92 +35,9 @@ def _link(item) -> str:
 
 
 def _doi_link(doi: str) -> str:
+    return f"[{doi}](https://doi.org/{doi})" if doi else "—"
     if not doi:
         return "—"
-
-    return f"[{doi}](https://doi.org/{doi})"
-
-
-def _oa_markdown(
-    item,
-) -> str:
-
-    pdf_url = getattr(
-        item,
-        "oa_pdf_url",
-        "",
-    ) or ""
-
-    oa_url = getattr(
-        item,
-        "oa_url",
-        "",
-    ) or ""
-
-    checked = bool(
-        getattr(
-            item,
-            "oa_checked",
-            False,
-        )
-    )
-
-    version = getattr(
-        item,
-        "oa_version",
-        "",
-    ) or ""
-
-    host_type = getattr(
-        item,
-        "oa_host_type",
-        "",
-    ) or ""
-
-    if pdf_url:
-
-        suffix = []
-
-        if version:
-            suffix.append(
-                version
-            )
-
-        if host_type:
-            suffix.append(
-                host_type
-            )
-
-        extra = (
-            " ｜ "
-            + " / ".join(
-                suffix
-            )
-            if suffix
-            else ""
-        )
-
-        return (
-            "- **全文**："
-            f"✅ [免费 PDF]({pdf_url})"
-            f"{extra}"
-        )
-
-    if oa_url:
-
-        return (
-            "- **全文**："
-            f"🟢 [开放全文页面]({oa_url})"
-        )
-
-    if checked:
-
-        return (
-            "- **全文**："
-            "🔒 暂未发现合法开放全文"
-        )
-
-    return ""
 
     return f"[{doi}](https://doi.org/{doi})"
 
@@ -137,18 +56,18 @@ def _truncate(text: str, limit: int) -> str:
     return cut + " …"
 
 
-def _frontmatter(
-    *,
-    day: str,
-    cfg: dict,
-    counts: dict,
-    statuses: list[dict],
-    fetched_total: int,
-    matched_total: int,
-    new_count: int,
+@@ -49,14 +65,23 @@
     listed: int,
     generated_at: str,
 ) -> list[str]:
+    """YAML front matter, so Obsidian properties and Dataview can query reports.
+
+    Lists are emitted with ``json.dumps`` - JSON is a subset of YAML, so quoting
+    stays correct even when a keyword label contains a colon or a quote.
+    """
+    topics = [k.get("label", "") for k in cfg.get("keywords", [])]
+    journals = {s["journal"] for s in statuses}
+    failed = [s for s in statuses if not s["ok"]]
 
     topics = [
         k.get("label", "")
@@ -169,24 +88,13 @@ def _frontmatter(
     return [
         "---",
         f"date: {day}",
-        f"generated: {generated_at}",
-        f"window_days: {cfg.get('window', {}).get('days', 3)}",
-        f"fetched: {fetched_total}",
-        f"matched: {matched_total}",
-        f"new_count: {new_count}",
-        f"listed: {listed}",
-        f"must_read: {counts['must_read']}",
-        f"worth_reading: {counts['worth_reading']}",
-        f"other: {counts['other']}",
-        f"journals: {len(journals)}",
-        f"sources_failed: {len(failed)}",
-        f"topics: {json.dumps(topics, ensure_ascii=False)}",
-        "tags: [journal-alert]",
-        "---",
-        "",
+@@ -78,46 +103,106 @@
     ]
 
 
+def _source_status_section(statuses: list[dict], mode: str) -> list[str]:
+    """Render the data-source footer: ``full`` table, ``summary``, or nothing."""
+    failed = [s for s in statuses if not s["ok"]]
 def _source_status_section(
     statuses: list[dict],
     mode: str,
@@ -202,9 +110,12 @@ def _source_status_section(
         return []
 
     if mode == "summary":
+        # Only interesting when something broke - otherwise it is one quiet line
+        # at the bottom instead of a 45-row table on every single report.
 
         if not statuses:
             return []
+        journals = len({s["journal"] for s in statuses})
 
         journals = len({
             s["journal"]
@@ -212,6 +123,7 @@ def _source_status_section(
         })
 
         if not failed:
+            return [f"> ✅ 数据源：{journals} 本刊、{len(statuses)} 条通道全部正常。", ""]
             return [
                 (
                     f"> ✅ 数据源：{journals} 本刊、"
@@ -223,6 +135,7 @@ def _source_status_section(
         out = [
             "## 数据源状态",
             "",
+            f"> ⚠️ {journals} 本刊中 **{len(failed)}** 条通道本次抓取失败，其余正常；失败不影响其他来源。",
             (
                 f"> ⚠️ {journals} 本刊中 "
                 f"**{len(failed)}** 条通道本次抓取失败，"
@@ -234,6 +147,8 @@ def _source_status_section(
         ]
 
         for status in failed:
+            note = (status.get("note") or "").replace("|", "/")
+            out.append(f"| {status['journal']} | {status['source']} | {status['items']} | {note} |")
 
             note = (
                 status.get("note") or ""
@@ -249,6 +164,8 @@ def _source_status_section(
         out.append("")
 
         return out
+    # full
+    out = ["## 数据源状态", "", "| 期刊 | 数据源 | 状态 | 条数 | 说明 |", "|---|---|---|---|---|"]
 
     out = [
         "## 数据源状态",
@@ -260,12 +177,14 @@ def _source_status_section(
     for status in statuses:
 
         state = "✅" if status["ok"] else "❌"
+        note = (status.get("note") or "").replace("|", "/")
 
         note = (
             status.get("note") or ""
         ).replace("|", "/")
 
         out.append(
+            f"| {status['journal']} | {status['source']} | {state} | {status['items']} | {note} |"
             f"| {status['journal']} | "
             f"{status['source']} | "
             f"{state} | "
@@ -276,11 +195,13 @@ def _source_status_section(
     out.append("")
 
     if failed:
+        out.append(f"⚠️ 有 {len(failed)} 个数据源本次抓取失败，上面表格已标明原因；失败不影响其他来源。")
         out.append(
             f"⚠️ 有 {len(failed)} 个数据源本次抓取失败，"
             "上面表格已标明原因；失败不影响其他来源。"
         )
     else:
+        out.append("✅ 全部数据源抓取正常。")
         out.append(
             "✅ 全部数据源抓取正常。"
         )
@@ -290,20 +211,16 @@ def _source_status_section(
     return out
 
 
-def build_markdown(
-    *,
-    day: str,
-    cfg: dict,
-    entries: list[dict],
-    statuses: list[dict],
-    fetched_total: int,
-    matched_total: int,
-    new_count: int = 0,
-    seen_before: int = 0,
-    generated_at: str,
+@@ -135,18 +220,53 @@
     entries_total: int | None = None,
     all_entries: list[dict] | None = None,
 ) -> str:
+    project = cfg.get("project", {}).get("name", "文献日报")
+    # Tier counts always describe the *whole* matched set, never just the rows we
+    # were told to list - otherwise a capped report would claim "必读 10" while
+    # the push notification (which counts every new item) says something else.
+    counted = all_entries if all_entries is not None else entries
+    counts = {tier: 0 for tier in TIER_ORDER}
 
     project = cfg.get(
         "project",
@@ -325,7 +242,9 @@ def build_markdown(
     }
 
     for entry in counted:
+        counts[tier_of(entry["scored"].score, cfg.get("tiers", {}))] += 1
 
+    keyword_labels = " / ".join(k.get("label", "") for k in cfg.get("keywords", []))
         tier = tier_of(
             entry["scored"].score,
             cfg.get("tiers", {}),
@@ -342,6 +261,7 @@ def build_markdown(
     )
 
     lines: list[str] = []
+    if cfg.get("output", {}).get("frontmatter", True):
 
     if cfg.get(
         "output",
@@ -354,16 +274,11 @@ def build_markdown(
         lines.extend(
             _frontmatter(
                 day=day,
-                cfg=cfg,
-                counts=counts,
-                statuses=statuses,
-                fetched_total=fetched_total,
-                matched_total=matched_total,
-                new_count=new_count,
-                listed=len(entries),
+@@ -160,75 +280,274 @@
                 generated_at=generated_at,
             )
         )
+    lines.append(f"# {project} · {day}")
 
     lines.append(
         f"# {project} · {day}"
@@ -372,11 +287,14 @@ def build_markdown(
     lines.append("")
 
     lines.append(
+        f"> 本次运行：抓取 **{fetched_total}** 篇 ｜ 关键词命中 **{matched_total}** 篇 ｜ "
+        f"新增 **{new_count}** 篇（其中 {seen_before} 篇此前已读过）"
         f"> 本次运行：抓取 **{fetched_total}** 篇 ｜ "
         f"关键词命中 **{matched_total}** 篇 ｜ "
         f"新增 **{new_count}** 篇"
         f"（其中 {seen_before} 篇此前已读过）"
     )
+    if entries_total is not None and entries_total > len(entries):
 
     if (
         entries_total is not None
@@ -384,6 +302,9 @@ def build_markdown(
     ):
 
         lines.append(
+            f"> 命中 **{entries_total}** 篇，按重要度只列出前 **{len(entries)}** 篇"
+            f"（其余 {entries_total - len(entries)} 篇仍留在历史库；"
+            f"调大 `output.max_entries` 后执行 `run.py --rerender` 即可恢复）"
             f"> 命中 **{entries_total}** 篇，"
             f"按重要度只列出前 **{len(entries)}** 篇"
             f"（其余 {entries_total - len(entries)} 篇"
@@ -393,9 +314,11 @@ def build_markdown(
     else:
 
         lines.append(
+            f"> 本日报累计收录 **{len(entries)}** 篇（当天多次运行会自动合并，不重复推送）"
             f"> 本日报累计收录 **{len(entries)}** 篇"
             "（当天多次运行会自动合并，不重复推送）"
         )
+    capped = entries_total is not None and entries_total > len(entries)
 
     capped = (
         entries_total is not None
@@ -403,6 +326,8 @@ def build_markdown(
     )
 
     lines.append(
+        f"> 必读 **{counts['must_read']}** ｜ 值得一读 **{counts['worth_reading']}** ｜ "
+        f"其他相关 **{counts['other']}**" + ("（按全部命中统计）" if capped else "")
         f"> 必读 **{counts['must_read']}** ｜ "
         f"值得一读 **{counts['worth_reading']}** ｜ "
         f"其他相关 **{counts['other']}**"
@@ -412,6 +337,8 @@ def build_markdown(
             else ""
         )
     )
+    lines.append(f"> 关注方向：{keyword_labels}")
+    lines.append(f"> 时间窗：近 {cfg.get('window', {}).get('days', 3)} 天 ｜ 生成时间：{generated_at}")
 
     lines.append(
         f"> 关注方向：{keyword_labels}"
@@ -426,12 +353,14 @@ def build_markdown(
     lines.append("")
 
     if not entries:
+        lines.append("## 今日无新增命中")
 
         lines.append(
             "## 今日无新增命中"
         )
 
         lines.append("")
+        lines.append("所有抓取到的文献都已在历史记录中出现过，或没有文献同时满足关键词与时间窗条件。")
 
         lines.append(
             "所有抓取到的文献都已在历史记录中出现过，"
@@ -441,6 +370,7 @@ def build_markdown(
         lines.append("")
 
     for tier in TIER_ORDER:
+        bucket = [e for e in entries if tier_of(e["scored"].score, cfg.get("tiers", {})) == tier]
 
         bucket = [
             entry
@@ -454,12 +384,14 @@ def build_markdown(
 
         if not bucket:
             continue
+        lines.append(f"## {TIER_TITLES[tier]}（{len(bucket)}）")
 
         lines.append(
             f"## {TIER_TITLES[tier]}（{len(bucket)}）"
         )
 
         lines.append("")
+        for index, entry in enumerate(bucket, 1):
 
         for index, entry in enumerate(
             bucket,
@@ -499,6 +431,8 @@ def build_markdown(
             )
 
             url = _link(item)
+            heading = f"[{item.title}]({url})" if url else item.title
+            lines.append(f"### {index}. {heading}")
 
             heading = (
                 f"[{item.title}]({url})"
@@ -518,6 +452,10 @@ def build_markdown(
             ]
 
             if item.doi:
+                meta.append(f"**DOI**：{_doi_link(item.doi)}")
+            lines.append("- " + " ｜ ".join(meta))
+            hits = "、".join(f"{m.label}（{'标题' if m.field_name == 'title' else '摘要'}：{m.term}）" for m in scored.matches)
+            lines.append(f"- **匹配**：{hits} ｜ **得分**：{scored.score}")
 
                 meta.append(
                     f"**DOI**：{_doi_link(item.doi)}"
@@ -550,57 +488,12 @@ def build_markdown(
                         methods
                     )
                 )
-                pdf_url = getattr(
-            item,
-            "oa_pdf_url",
-            "",
-        ) or ""
-
-        oa_url = getattr(
-            item,
-            "oa_url",
-            "",
-        ) or ""
-
-        oa_checked = bool(
-            getattr(
-                item,
-                "oa_checked",
-                False,
-            )
-        )
-
-        if pdf_url:
-
-            detail_lines.append(
-                f"[免费PDF]({pdf_url})"
-            )
-
-        elif oa_url:
-
-            detail_lines.append(
-                f"[开放全文]({oa_url})"
-            )
-
-        elif oa_checked:
-
-            detail_lines.append(
-                "暂无开放全文"
-            )
 
             else:
 
                 lines.append(
                     "- **方法识别**："
                     "标题和摘要中暂未识别到明确方法"
-                )
-            oa_line = _oa_markdown(
-                item
-            )
-
-            if oa_line:
-                lines.append(
-                    oa_line
                 )
 
             hits = "、".join(
@@ -620,6 +513,7 @@ def build_markdown(
             )
 
             if item.authors:
+                lines.append(f"- **作者**：{', '.join(item.authors[:6])}{' 等' if len(item.authors) > 6 else ''}")
 
                 lines.append(
                     f"- **作者**："
@@ -630,6 +524,7 @@ def build_markdown(
             if item.abstract:
 
                 lines.append("")
+                lines.append(f"> {_truncate(item.abstract, 700)}")
 
                 lines.append(
                     f"> {_truncate(item.abstract, 700)}"
@@ -641,6 +536,8 @@ def build_markdown(
 
         lines.append("")
 
+    mode = str(cfg.get("output", {}).get("source_status", "full")).lower()
+    if mode not in ("full", "summary", "none"):
     mode = str(
         cfg.get(
             "output",
@@ -657,6 +554,7 @@ def build_markdown(
         "none",
     ):
         mode = "full"
+    lines.extend(_source_status_section(statuses, mode))
 
     lines.extend(
         _source_status_section(
@@ -668,6 +566,7 @@ def build_markdown(
     lines.append("---")
 
     lines.append("")
+    lines.append(f"*由 journal-alert 自动生成 · {generated_at} · 历史库 `state/seen.sqlite`*")
 
     lines.append(
         f"*由 journal-alert 自动生成 · "
@@ -680,16 +579,26 @@ def build_markdown(
     return "\n".join(lines)
 
 
-def build_digest(
-    *,
-    day: str,
-    cfg: dict,
-    entries: list[dict],
-    fetched_total: int,
-    matched_total: int,
+@@ -242,51 +561,189 @@
     max_items: int,
     max_chars: int,
 ) -> tuple[str, str]:
+    """Return ``(title, markdown_body)`` for a push notification.
+
+    Layout rules - both are deliberate, and both have bitten us:
+
+    * one blank line **between** entries, so each item is its own paragraph.
+      Without it Markdown runs every entry together into a single block and
+      WeChat shows one long line of concatenated text.
+    * two trailing spaces **inside** an entry, which is Markdown's hard line
+      break. A bare newline is a "soft" break and most renderers collapse it
+      into a space, which would glue the title to the journal/date line.
+    """
+    project = cfg.get("project", {}).get("name", "文献日报")
+    must = [e for e in entries if tier_of(e["scored"].score, cfg.get("tiers", {})) == "must_read"]
+    must_ids = {id(e) for e in must}
+    rest = [e for e in entries if id(e) not in must_ids]
+    title = f"{project} {day}：新增 {len(entries)} 篇，必读 {len(must)} 篇"
 
     project = cfg.get(
         "project",
@@ -729,6 +638,7 @@ def build_digest(
     blocks: list[str] = []
 
     shown = 0
+    for entry in (must + rest):
 
     for entry in (
         must + rest
@@ -762,6 +672,8 @@ def build_digest(
         )
 
         url = _link(item)
+        star = "🔥" if id(entry) in must_ids else "·"
+        hits = "、".join(entry["scored"].labels)
 
         star = (
             "🔥"
@@ -770,6 +682,7 @@ def build_digest(
         )
 
         if url:
+            head = f"{star} [{_truncate(item.title, 120)}]({url})"
 
             head = (
                 f"{star} "
@@ -778,6 +691,9 @@ def build_digest(
             )
 
         else:
+            head = f"{star} {_truncate(item.title, 120)}"
+        meta = f"　　{item.journal} · {item.date} · 匹配 {hits}"
+        blocks.append(f"{head}  \n{meta}")
 
             head = (
                 f"{star} "
@@ -824,6 +740,7 @@ def build_digest(
 
         shown += 1
 
+    lines = [f"抓取 {fetched_total} 篇 · 命中 {matched_total} 篇 · 新增 **{len(entries)}** 篇"]
     lines = [
         (
             f"抓取 {fetched_total} 篇 · "
@@ -841,6 +758,7 @@ def build_digest(
     if len(entries) > shown:
 
         lines.append("")
+        lines.append(f"…… 其余 {len(entries) - shown} 篇见本地日报。")
 
         lines.append(
             f"…… 其余 "
@@ -851,6 +769,9 @@ def build_digest(
     body = "\n".join(lines)
 
     if len(body) > max_chars:
+        # Cut back to a paragraph boundary so we never truncate mid-entry.
+        cut = body[:max_chars].rsplit("\n\n", 1)[0] or body[:max_chars].rsplit("\n", 1)[0]
+        body = cut + "\n\n……（已截断，完整内容见本地 Markdown 日报）"
 
         cut = (
             body[:max_chars]
