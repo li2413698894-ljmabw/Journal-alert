@@ -410,7 +410,7 @@ def run(args: argparse.Namespace) -> int:
             if entry["item"].uid not in known
         ]
 
-        for entry in new_entries:
+        for entry in matched:
             entry["scored"].tier = tier_of(
                 entry["scored"].score,
                 tiers,
