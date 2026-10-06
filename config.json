@@ -390,6 +390,14 @@
       "enabled": true
     }
   ],
+  "zotero": {
+    "enabled": true,
+    "sync_tiers": [
+      "must_read",
+      "worth_reading"
+    ],
+    "daily_collection": true
+  },
   "push": {
     "enabled": true,
     "skip_when_empty": true,
