@@ -29,6 +29,7 @@ from jalert.report import build_digest, build_markdown  # noqa: E402
 from jalert.score import Scorer, tier_of  # noqa: E402
 from jalert.state import Store, last_run_started  # noqa: E402
 from jalert.zotero_sync import sync_entries
+from jalert.open_access import annotate_entries
 
 TIER_RANK = {"must_read": 0, "worth_reading": 1, "other": 2}
 
@@ -415,6 +416,22 @@ def run(args: argparse.Namespace) -> int:
                 entry["scored"].score,
                 tiers,
             )
+             if not args.dry_run:
+
+            try:
+
+                annotate_entries(
+                    entries=matched,
+                    cfg=cfg,
+                    log=log,
+                )
+
+            except Exception as exc:
+
+                log.warning(
+                    "Open-access lookup failed: %s",
+                    str(exc)[:500],
+                )
 
         if not args.dry_run:
 
